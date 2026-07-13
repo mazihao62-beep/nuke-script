@@ -1,8 +1,4 @@
--- ============================================================
--- 合成一个核弹脚本 v8
--- 作者：b站英吉利超入_
---写后感:8版啊整整8版啊我真几把力竭了啊
--- ============================================================
+-- ===== 无任何外部依赖的最小测试版本 =====
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
@@ -11,24 +7,65 @@ local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
+
+-- ===== 先用最安全的方式获取远程事件 =====
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- ===== 直接从源码路径查找远程事件 =====
-local RemoteEvents = ReplicatedStorage:FindFirstChild("RemoteEvents")
-local MergeRequest = RemoteEvents and RemoteEvents:FindFirstChild("MergeRequest")
+-- 方案1: 从Packages.Remotes模块获取（这是源码的方式）
+local MergeRequest = nil
+local Packages = ReplicatedStorage:FindFirstChild("Packages")
+if Packages then
+    local RemotesMod = Packages:FindFirstChild("Remotes")
+    if RemotesMod and RemotesMod:IsA("ModuleScript") then
+        local ok, result = pcall(require, RemotesMod)
+        if ok and type(result) == "table" then
+            MergeRequest = result.MergeRequest
+        end
+    end
+end
 
+-- 方案2: 如果方案1不行，直接从RemoteEvents找
+if MergeRequest == nil then
+    local RemoteEvents = ReplicatedStorage:FindFirstChild("RemoteEvents")
+    if RemoteEvents then
+        MergeRequest = RemoteEvents:FindFirstChild("MergeRequest")
+    end
+end
+
+-- 获取NukeRemotes
 local NukeRemotes = ReplicatedStorage:FindFirstChild("NukeRemotes")
-local PickUp = NukeRemotes and NukeRemotes:FindFirstChild("PickUp")
-local Drop = NukeRemotes and NukeRemotes:FindFirstChild("Drop")
-local HoldStarted = NukeRemotes and NukeRemotes:FindFirstChild("HoldStarted")
-local HoldEnded = NukeRemotes and NukeRemotes:FindFirstChild("HoldEnded")
+local PickUp = nil
+local Drop = nil
+local HoldStarted = nil
+local HoldEnded = nil
 
+if NukeRemotes then
+    PickUp = NukeRemotes:FindFirstChild("PickUp")
+    Drop = NukeRemotes:FindFirstChild("Drop")
+    HoldStarted = NukeRemotes:FindFirstChild("HoldStarted")
+    HoldEnded = NukeRemotes:FindFirstChild("HoldEnded")
+end
+
+-- ===== 输出调试信息，看看哪些找到了 =====
+print("===== 远程事件检测 =====")
+print("MergeRequest:", MergeRequest and "✅" or "❌")
+print("PickUp:", PickUp and "✅" or "❌")
+print("Drop:", Drop and "✅" or "❌")
+print("HoldStarted:", HoldStarted and "✅" or "❌")
+print("HoldEnded:", HoldEnded and "✅" or "❌")
+print("========================")
+
+-- ===== 如果MergeRequest没找到，直接报错提示 =====
+if MergeRequest == nil then
+    warn("错误: 找不到 MergeRequest 远程事件！")
+    warn("请检查 ReplicatedStorage.RemoteEvents.MergeRequest 或 ReplicatedStorage.Packages.Remotes.MergeRequest 是否存在")
+end
+-- ===== 常量 =====
 local PICKUP_RADIUS = 7
 local DROP_DEBOUNCE = 0.75
 local INDIVIDUAL_DROP_DEBOUNCE = 2.5
 
-local TIER_NAMES = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}
-
+-- ===== 状态 =====
 local isHolding = false
 local currentHeldTier = 0
 local autoOn = true
@@ -41,7 +78,7 @@ local pickupDebounce = false
 local idleTimer = 0
 local walkStartTime = 0
 
--- ===== 通知系统 =====
+-- ===== 通知 =====
 local function notify(title, text, dur)
     dur = dur or 2
     if not CoreGui then return end
@@ -76,11 +113,10 @@ local function notify(title, text, dur)
     end)
 end
 
--- ===== 工具函数 =====
-local function getTierColor(t)
-    local cs = {Color3.fromRGB(180, 180, 180), Color3.fromRGB(80, 200, 80), Color3.fromRGB(50, 130, 255), Color3.fromRGB(150, 0, 255), Color3.fromRGB(255, 200, 50), Color3.fromRGB(255, 50, 50)}
-    return cs[t] or Color3.fromHSV((t * 0.15) % 1, 1, 1)
-end
+-- ===== 工具 =====
+local TIER_NAMES = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}
+local TIER_COLORS = {Color3.fromRGB(180, 180, 180), Color3.fromRGB(80, 200, 80), Color3.fromRGB(50, 130, 255), Color3.fromRGB(150, 0, 255), Color3.fromRGB(255, 200, 50), Color3.fromRGB(255, 50, 50)}
+local function getTierColor(t) return TIER_COLORS[t] or Color3.fromHSV((t * 0.15) % 1, 1, 1) end
 
 local function findMyBase()
     if myBase and myBase.Parent then return myBase end
@@ -166,10 +202,7 @@ local function getMergeableTiers()
     table.sort(result)
     return result
 end
--- ============================================================
--- 合成一个核弹脚本 v8
--- 作者：b站英吉利超入_
--- ============================================================
+-- ===== 核心功能（每个调用都保护） =====
 
 local function walkToMergeableNuke()
     if isHolding then stopMoving(); return false end
@@ -231,16 +264,15 @@ local function tryPickup()
     end
     if bestObj then
         pickupDebounce = true
-        local ok = false
         if PickUp then
-            ok = pcall(function() PickUp:FireServer(bestObj) end)
-        end
-        if ok then
-            local tier = tonumber(bestObj:GetAttribute("Tier")) or 1
-            notify("📥 拾取", "Tier " .. tier)
-            stopMoving()
-            task.delay(0.4, function() pickupDebounce = false end)
-            return true
+            local ok = pcall(function() PickUp:FireServer(bestObj) end)
+            if ok then
+                local tier = tonumber(bestObj:GetAttribute("Tier")) or 1
+                notify("📥 拾取", "Tier " .. tier)
+                stopMoving()
+                task.delay(0.4, function() pickupDebounce = false end)
+                return true
+            end
         end
         pickupDebounce = false
     end
@@ -255,14 +287,13 @@ local function tryMerge()
         if data.Tier == currentHeldTier then target = data.Object; break end
     end
     if target and target.Parent then
-        local ok = false
         if MergeRequest then
-            ok = pcall(function() MergeRequest:FireServer(target) end)
-        end
-        if ok then
-            stopMoving()
-            notify("🔀 合并", "Tier " .. currentHeldTier)
-            return true
+            local ok = pcall(function() MergeRequest:FireServer(target) end)
+            if ok then
+                stopMoving()
+                notify("🔀 合并", "Tier " .. currentHeldTier)
+                return true
+            end
         end
     else
         if Drop then pcall(function() Drop:FireServer() end) end
@@ -287,72 +318,49 @@ local function mergeAll()
     return count
 end
 
--- ===== 监听服务端事件 =====
 if HoldStarted then
     HoldStarted.OnClientEvent:Connect(function(tier)
-        isHolding = true
-        currentHeldTier = tonumber(tier) or tier
-        stopMoving()
+        isHolding = true; currentHeldTier = tonumber(tier) or tier; stopMoving()
     end)
 end
 
 if HoldEnded then
     HoldEnded.OnClientEvent:Connect(function()
-        lastDropTime = os.clock()
-        isHolding = false
-        currentHeldTier = 0
-        stopMoving()
+        lastDropTime = os.clock(); isHolding = false; currentHeldTier = 0; stopMoving()
     end)
 end
 
--- ===== 主循环（绝对不使用continue） =====
 local function startAutoLoop()
     task.spawn(function()
         while true do
             task.wait(0.1)
-            
             local canRun = autoOn and (findMyBase() ~= nil) and (os.clock() - lastDropTime >= DROP_DEBOUNCE)
-            
             if canRun then
-                if isHolding then
-                    tryMerge()
+                if isHolding then tryMerge()
                 else
-                    -- 行走检查
                     if isWalking then
                         local needStop = false
-                        if walkTargetObj == nil or walkTargetPos == nil then
-                            needStop = true
-                        elseif walkTargetObj.Parent == nil then
-                            needStop = true
+                        if walkTargetObj == nil or walkTargetPos == nil then needStop = true
+                        elseif walkTargetObj.Parent == nil then needStop = true
                         else
                             local np = getPlayerPos()
                             if np then
-                                local dx = walkTargetPos.X - np.X
-                                local dz = walkTargetPos.Z - np.Z
+                                local dx = walkTargetPos.X - np.X; local dz = walkTargetPos.Z - np.Z
                                 local dist = math.sqrt(dx * dx + dz * dz)
-                                if dist <= PICKUP_RADIUS then
-                                    needStop = true
-                                elseif os.clock() - walkStartTime > 5 then
-                                    needStop = true
-                                end
+                                if dist <= PICKUP_RADIUS then needStop = true
+                                elseif os.clock() - walkStartTime > 5 then needStop = true end
                             end
                         end
                         if needStop then stopMoving() end
                     end
-                    
                     local picked = tryPickup()
-                    if picked then
-                        idleTimer = 0
+                    if picked then idleTimer = 0
                     else
                         local walked = walkToMergeableNuke()
-                        if walked then
-                            idleTimer = 0
+                        if walked then idleTimer = 0
                         else
                             idleTimer = idleTimer + 1
-                            if idleTimer >= 50 then
-                                task.wait(1)
-                                idleTimer = 0
-                            end
+                            if idleTimer >= 50 then task.wait(1); idleTimer = 0 end
                         end
                     end
                 end
@@ -361,267 +369,85 @@ local function startAutoLoop()
     end)
 end
 
--- ===== 快捷键 =====
 UserInputService.InputBegan:Connect(function(input, gpo)
     if gpo then return end
-    if input.KeyCode == Enum.KeyCode.M then
-        if isHolding then tryMerge() end
-    elseif input.KeyCode == Enum.KeyCode.N then
-        mergeAll()
-    elseif input.KeyCode == Enum.KeyCode.R then
+    if input.KeyCode == Enum.KeyCode.M then if isHolding then tryMerge() end end
+    if input.KeyCode == Enum.KeyCode.N then mergeAll() end
+    if input.KeyCode == Enum.KeyCode.R then
         myBase = nil; stopMoving()
-        if findMyBase() then
-            local n = getAllMyNukes()
-            notify("🔄 已刷新", "找到 " .. #n .. " 个核弹")
-        else
-            notify("⚠️ 未找到基地")
-        end
+        if findMyBase() then local n = getAllMyNukes(); notify("🔄 已刷新", "找到 " .. #n .. " 个核弹")
+        else notify("⚠️ 未找到基地") end
     end
 end)
--- ============================================================
--- 合成一个核弹脚本 v8
--- 作者：b站英吉利超入_
--- ============================================================
 
--- ===== UI =====
+-- UI部分（精简）
 local function buildUI()
     local existing = CoreGui:FindFirstChild("NukeMergeUI")
     if existing then existing:Destroy() end
-    
-    local sg = Instance.new("ScreenGui")
-    sg.Name = "NukeMergeUI"; sg.Parent = CoreGui
-    
+    local sg = Instance.new("ScreenGui"); sg.Name = "NukeMergeUI"; sg.Parent = CoreGui
     local mf = Instance.new("Frame")
-    mf.Size = UDim2.new(0, 300, 0, 320)
-    mf.Position = UDim2.new(0.5, -150, 0.4, -160)
-    mf.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-    mf.BackgroundTransparency = 0.05
-    mf.BorderSizePixel = 0
-    mf.Active = true; mf.Draggable = true; mf.ClipsDescendants = true
-    mf.Parent = sg
+    mf.Size = UDim2.new(0, 300, 0, 250); mf.Position = UDim2.new(0.5, -150, 0.4, -125)
+    mf.BackgroundColor3 = Color3.fromRGB(25, 25, 25); mf.BackgroundTransparency = 0.05
+    mf.BorderSizePixel = 0; mf.Active = true; mf.Draggable = true; mf.ClipsDescendants = true; mf.Parent = sg
     Instance.new("UICorner", mf).CornerRadius = UDim.new(0, 10)
-    local stroke = Instance.new("UIStroke", mf)
-    stroke.Thickness = 2; stroke.Color = Color3.fromRGB(255, 100, 100)
-    
-    local tb = Instance.new("Frame")
-    tb.Size = UDim2.new(1, 0, 0, 32)
-    tb.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-    tb.BorderSizePixel = 0; tb.Parent = mf
+    local stroke = Instance.new("UIStroke", mf); stroke.Thickness = 2; stroke.Color = Color3.fromRGB(255, 100, 100)
+    local tb = Instance.new("Frame"); tb.Size = UDim2.new(1, 0, 0, 32)
+    tb.BackgroundColor3 = Color3.fromRGB(45, 45, 45); tb.BorderSizePixel = 0; tb.Parent = mf
     Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 10)
     local title = Instance.new("TextLabel", tb)
     title.Size = UDim2.new(1, -70, 1, 0); title.Position = UDim2.new(0, 12, 0, 0)
     title.BackgroundTransparency = 1; title.Font = Enum.Font.SourceSansBold; title.TextSize = 16
     title.TextColor3 = Color3.new(1, 1, 1); title.TextXAlignment = Enum.TextXAlignment.Left
     title.Text = "☢️ 合成核弹脚本"; title.TextScaled = true
-    
     local author = Instance.new("TextLabel")
-    author.Size = UDim2.new(0, 120, 0, 14)
-    author.Position = UDim2.new(1, -128, 0, 32)
+    author.Size = UDim2.new(0, 120, 0, 14); author.Position = UDim2.new(1, -128, 0, 32)
     author.BackgroundTransparency = 1; author.Font = Enum.Font.SourceSans; author.TextSize = 10
     author.TextColor3 = Color3.fromRGB(150, 150, 150)
-    author.TextXAlignment = Enum.TextXAlignment.Right
-    author.Text = "by b站英吉利超入_"; author.Parent = mf
-    
+    author.TextXAlignment = Enum.TextXAlignment.Right; author.Text = "by b站英吉利超入_"; author.Parent = mf
     local minB = Instance.new("TextButton", tb)
     minB.Size = UDim2.new(0, 24, 0, 24); minB.Position = UDim2.new(1, -56, 0, 4)
     minB.Text = "—"; minB.Font = Enum.Font.SourceSansBold; minB.TextSize = 14
-    minB.TextColor3 = Color3.new(1, 1, 1)
-    minB.BackgroundColor3 = Color3.fromRGB(100, 100, 100); minB.BorderSizePixel = 0
+    minB.TextColor3 = Color3.new(1, 1, 1); minB.BackgroundColor3 = Color3.fromRGB(100, 100, 100); minB.BorderSizePixel = 0
     Instance.new("UICorner", minB).CornerRadius = UDim.new(0, 4)
-    
     local closeB = Instance.new("TextButton", tb)
     closeB.Size = UDim2.new(0, 24, 0, 24); closeB.Position = UDim2.new(1, -28, 0, 4)
     closeB.Text = "✕"; closeB.Font = Enum.Font.SourceSansBold; closeB.TextSize = 14
-    closeB.TextColor3 = Color3.new(1, 1, 1)
-    closeB.BackgroundColor3 = Color3.fromRGB(200, 80, 80); closeB.BorderSizePixel = 0
+    closeB.TextColor3 = Color3.new(1, 1, 1); closeB.BackgroundColor3 = Color3.fromRGB(200, 80, 80); closeB.BorderSizePixel = 0
     Instance.new("UICorner", closeB).CornerRadius = UDim.new(0, 4)
     
-    local info = Instance.new("Frame")
-    info.Size = UDim2.new(1, -24, 0, 50)
-    info.Position = UDim2.new(0, 12, 0, 36)
-    info.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    info.BorderSizePixel = 0; info.Parent = mf
-    Instance.new("UICorner", info).CornerRadius = UDim.new(0, 6)
+    local debugText = Instance.new("TextLabel", mf)
+    debugText.Size = UDim2.new(1, -24, 1, -44); debugText.Position = UDim2.new(0, 12, 0, 38)
+    debugText.BackgroundTransparency = 1; debugText.Font = Enum.Font.SourceSans; debugText.TextSize = 12
+    debugText.TextColor3 = Color3.fromRGB(200, 200, 200)
+    debugText.TextXAlignment = Enum.TextXAlignment.Left; debugText.TextYAlignment = Enum.TextYAlignment.Top
+    debugText.Text = "远程事件检测:\nMergeRequest: " .. tostring(MergeRequest ~= nil) .. "\nPickUp: " .. tostring(PickUp ~= nil) .. "\nDrop: " .. tostring(Drop ~= nil) .. "\nHoldStarted: " .. tostring(HoldStarted ~= nil) .. "\nHoldEnded: " .. tostring(HoldEnded ~= nil) .. "\n\n等待初始化..."
     
-    local cntLbl = Instance.new("TextLabel", info)
-    cntLbl.Size = UDim2.new(0.5, -4, 0.5, 0); cntLbl.Position = UDim2.new(0, 8, 0, 4)
-    cntLbl.BackgroundTransparency = 1; cntLbl.Font = Enum.Font.SourceSansBold; cntLbl.TextSize = 14
-    cntLbl.TextColor3 = Color3.fromRGB(180, 180, 255)
-    cntLbl.TextXAlignment = Enum.TextXAlignment.Left; cntLbl.Text = "💣 扫描中..."
-    
-    local maxTierLbl = Instance.new("TextLabel", info)
-    maxTierLbl.Size = UDim2.new(0.5, -4, 0.5, 0); maxTierLbl.Position = UDim2.new(0.5, 4, 0, 4)
-    maxTierLbl.BackgroundTransparency = 1; maxTierLbl.Font = Enum.Font.SourceSansBold; maxTierLbl.TextSize = 14
-    maxTierLbl.TextColor3 = Color3.fromRGB(200, 200, 200)
-    maxTierLbl.TextXAlignment = Enum.TextXAlignment.Right; maxTierLbl.Text = "🏆 等待数据"
-    
-    local holdLbl = Instance.new("TextLabel", info)
-    holdLbl.Size = UDim2.new(0.5, -4, 0.5, 0); holdLbl.Position = UDim2.new(0, 8, 0.5, 2)
-    holdLbl.BackgroundTransparency = 1; holdLbl.Font = Enum.Font.SourceSans; holdLbl.TextSize = 11
-    holdLbl.TextColor3 = Color3.fromRGB(150, 255, 150)
-    holdLbl.TextXAlignment = Enum.TextXAlignment.Left; holdLbl.Text = "✋ 空手"
-    
-    local statusLbl = Instance.new("TextLabel", info)
-    statusLbl.Size = UDim2.new(0.5, -4, 0.5, 0); statusLbl.Position = UDim2.new(0.5, 4, 0.5, 2)
-    statusLbl.BackgroundTransparency = 1; statusLbl.Font = Enum.Font.SourceSans; statusLbl.TextSize = 11
-    statusLbl.TextColor3 = Color3.fromRGB(180, 180, 180)
-    statusLbl.TextXAlignment = Enum.TextXAlignment.Right; statusLbl.Text = "⚡ 就绪"
-
-    local sf = Instance.new("ScrollingFrame")
-    sf.Size = UDim2.new(1, -24, 1, -98); sf.Position = UDim2.new(0, 12, 0, 92)
-    sf.BackgroundTransparency = 1; sf.BorderSizePixel = 0; sf.ScrollBarThickness = 4
-    sf.CanvasSize = UDim2.new(0, 0, 0, 0); sf.Parent = mf
-    local ly = Instance.new("UIListLayout", sf)
-    ly.SortOrder = Enum.SortOrder.LayoutOrder; ly.Padding = UDim.new(0, 6)
-    ly:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        sf.CanvasSize = UDim2.new(0, 0, 0, ly.AbsoluteContentSize.Y + 10)
-    end)
-    
-    local function addBtn(text, color)
-        local b = Instance.new("TextButton", sf)
-        b.Size = UDim2.new(1, 0, 0, 38); b.Text = text
-        b.BackgroundColor3 = color or Color3.fromRGB(60, 160, 60)
-        b.TextColor3 = Color3.new(1, 1, 1)
-        b.Font = Enum.Font.SourceSansBold; b.TextSize = 16
-        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8); return b
-    end
-    
-    local function addSwitch(text, default, cb)
-        local f = Instance.new("Frame", sf)
-        f.Size = UDim2.new(1, 0, 0, 38); f.BackgroundColor3 = Color3.fromRGB(40, 40, 40); f.BorderSizePixel = 0
-        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
-        local lb = Instance.new("TextLabel", f)
-        lb.Size = UDim2.new(1, -50, 1, 0); lb.Position = UDim2.new(0, 10, 0, 0)
-        lb.BackgroundTransparency = 1; lb.Font = Enum.Font.SourceSans; lb.TextSize = 14
-        lb.TextColor3 = Color3.new(1, 1, 1); lb.TextXAlignment = Enum.TextXAlignment.Left; lb.Text = text
-        local on = default
-        local ind = Instance.new("Frame", f)
-        ind.Size = UDim2.new(0, 36, 0, 20); ind.Position = UDim2.new(1, -44, 0.5, -10)
-        ind.BackgroundColor3 = on and Color3.fromRGB(60, 200, 60) or Color3.fromRGB(120, 120, 120); ind.BorderSizePixel = 0
-        Instance.new("UICorner", ind).CornerRadius = UDim.new(0, 10)
-        local dot = Instance.new("Frame", ind)
-        dot.Size = UDim2.new(0, 16, 0, 16)
-        dot.Position = on and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
-        dot.BackgroundColor3 = Color3.new(1, 1, 1); dot.BorderSizePixel = 0
-        Instance.new("UICorner", dot).CornerRadius = UDim.new(0, 8)
-        local btn = Instance.new("TextButton", f)
-        btn.Size = UDim2.new(1, 0, 1, 0); btn.BackgroundTransparency = 1; btn.Text = ""
-        btn.MouseButton1Click:Connect(function()
-            on = not on
-            ind.BackgroundColor3 = on and Color3.fromRGB(60, 200, 60) or Color3.fromRGB(120, 120, 120)
-            dot:TweenPosition(on and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8),
-                Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
-            if cb then cb(on) end
-        end)
-    end
-    
-    local function addSection(text)
-        local f = Instance.new("Frame", sf)
-        f.Size = UDim2.new(1, 0, 0, 20); f.BackgroundTransparency = 1
-        local ln = Instance.new("Frame", f)
-        ln.Size = UDim2.new(1, 0, 0, 1); ln.Position = UDim2.new(0, 0, 1, -1)
-        ln.BackgroundColor3 = Color3.fromRGB(80, 80, 80); ln.BorderSizePixel = 0
-        local lb = Instance.new("TextLabel", f)
-        lb.Size = UDim2.new(1, 0, 1, 0); lb.BackgroundTransparency = 1
-        lb.Font = Enum.Font.SourceSansBold; lb.TextSize = 13
-        lb.TextColor3 = Color3.fromRGB(180, 180, 180); lb.Text = text; lb.TextXAlignment = Enum.TextXAlignment.Left
-    end
-    
-    addSection("🔀 合并操作")
-    addBtn("🔀 手动合并 (M)", Color3.fromRGB(120, 60, 200)).MouseButton1Click:Connect(function() if isHolding then tryMerge() end end)
-    addBtn("🔥 批量合并 (N)", Color3.fromRGB(180, 60, 200)).MouseButton1Click:Connect(mergeAll)
-    addBtn("🔄 刷新 (R)", Color3.fromRGB(60, 120, 200)).MouseButton1Click:Connect(function()
-        myBase = nil; stopMoving()
-        if findMyBase() then local n = getAllMyNukes(); notify("🔄 已刷新", #n .. "个核弹")
-        else notify("⚠️ 未找到基地") end
-    end)
-    addSection("⚙️ 设置")
-    addSwitch("🔄 全自动", autoOn, function(v) autoOn = v; notify(v and "🟢 已开启" or "🔴 已关闭") end)
-    addSection("📊 信息")
-    
-    local st = Instance.new("TextLabel", sf)
-    st.Size = UDim2.new(1, 0, 0, 90); st.BackgroundColor3 = Color3.fromRGB(35, 35, 35); st.BorderSizePixel = 0
-    st.Font = Enum.Font.SourceSans; st.TextSize = 12; st.TextColor3 = Color3.fromRGB(200, 200, 200)
-    st.TextXAlignment = Enum.TextXAlignment.Left; st.TextYAlignment = Enum.TextYAlignment.Top; st.Parent = sf
-    Instance.new("UICorner", st).CornerRadius = UDim.new(0, 6)
-    
-    task.spawn(function()
-        while sg and sg.Parent do
-            task.wait(0.5)
-            local allNukes = getAllMyNukes(); local count = #allNukes; local maxT = 0; local distData = {}
-            local mergeable = getMergeableTiers()
-            for _, data in ipairs(allNukes) do
-                local t = data.Tier; distData[t] = (distData[t] or 0) + 1
-                if t > maxT then maxT = t end
-            end
-            local heldAttr = tonumber(player:GetAttribute("HeldNukeTier")) or 0
-            if heldAttr > maxT then maxT = heldAttr end
-            if isHolding and currentHeldTier > maxT then maxT = currentHeldTier end
-            if maxT == 0 then maxT = 1 end
-            cntLbl.Text = "💣 " .. count .. " 个"
-            holdLbl.Text = isHolding and "✋ 持有 T" .. currentHeldTier or "✋ 空手"
-            holdLbl.TextColor3 = isHolding and Color3.fromRGB(255, 200, 50) or Color3.fromRGB(150, 255, 150)
-            maxTierLbl.Text = "🏆 T" .. maxT
-            if isHolding then
-                local canMerge = false
-                for _, data in ipairs(allNukes) do if data.Tier == currentHeldTier then canMerge = true; break end end
-                statusLbl.Text = canMerge and "🔀 可合并" or "📤 待丢弃"
-                statusLbl.TextColor3 = canMerge and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(255, 200, 100)
-            elseif isWalking then
-                statusLbl.Text = "🚶 走向核弹"; statusLbl.TextColor3 = Color3.fromRGB(100, 200, 255)
-            elseif #mergeable > 0 then
-                statusLbl.Text = "🎯 T" .. mergeable[1] .. "可合并"; statusLbl.TextColor3 = Color3.fromRGB(100, 255, 100)
-            else
-                statusLbl.Text = count > 0 and "⏳ 无可合并" or "⏳ 等待核弹"
-                statusLbl.TextColor3 = Color3.fromRGB(180, 180, 180)
-            end
-            local distStr = {}; local sorted = {}
-            for t, _ in pairs(distData) do table.insert(sorted, t) end
-            table.sort(sorted)
-            for _, t in ipairs(sorted) do table.insert(distStr, "T" .. t .. ":" .. distData[t]) end
-            st.Text = string.format("核弹:%d 最高:T%d\n可合并:%s\n分布:%s", count, maxT,
-                #mergeable > 0 and table.concat(mergeable, " ") or "无",
-                #distStr > 0 and table.concat(distStr, " ") or "无")
-        end
-    end)
-    
-    local ff = Instance.new("Frame")
-    ff.Size = UDim2.new(0, 200, 0, 30); ff.Position = UDim2.new(0.5, -100, 0, 10)
-    ff.BackgroundColor3 = Color3.fromRGB(35, 35, 35); ff.BackgroundTransparency = 0.1; ff.BorderSizePixel = 0
-    ff.Visible = false; ff.Active = true; ff.Draggable = true; ff.Parent = sg
-    Instance.new("UICorner", ff).CornerRadius = UDim.new(0, 15)
-    local fs = Instance.new("UIStroke", ff); fs.Thickness = 1.5; fs.Color = Color3.fromRGB(255, 100, 100)
-    local fl = Instance.new("TextLabel", ff)
-    fl.Size = UDim2.new(1, 0, 1, 0); fl.BackgroundTransparency = 1
-    fl.Font = Enum.Font.SourceSansBold; fl.TextSize = 14; fl.TextColor3 = Color3.new(1, 1, 1)
-    fl.Text = "☢️ 合成核弹运行中"; fl.TextXAlignment = Enum.TextXAlignment.Center
-    local ts = nil
-    ff.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then ts = i.Position end end)
-    ff.InputEnded:Connect(function(i)
-        if ts and (i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch) then
-            if (i.Position - ts).Magnitude < 5 then mf.Visible = true; ff.Visible = false end; ts = nil end
-    end)
-    minB.MouseButton1Click:Connect(function() mf.Visible = false; ff.Visible = true end)
+    minB.MouseButton1Click:Connect(function() mf.Visible = false end)
     closeB.MouseButton1Click:Connect(function() sg:Destroy() end)
     local rb = RunService.Heartbeat:Connect(function()
         local h = (tick() * 0.3) % 1; local c = Color3.fromHSV(h, 1, 1)
-        if stroke.Parent then stroke.Color = c end; if fs.Parent then fs.Color = c end
+        if stroke.Parent then stroke.Color = c end
     end)
     sg.Destroying:Connect(function() rb:Disconnect() end)
 end
 
--- ===== 启动 =====
+-- 启动
 local ok, err = pcall(function()
-    print("===== ☢️ 合成核弹脚本 v8 =====")
-    print("作者: b站英吉利超入_")
-    buildUI(); startAutoLoop()
-    task.delay(2, function()
-        if findMyBase() then local n = getAllMyNukes(); notify("☢️ 已就绪", #n .. "个核弹")
-        else notify("⚠️ 提示", "未找到基地，按R刷新") end
-    end)
+    buildUI()
+    startAutoLoop()
+    notify("☢️ 合成核弹", "v8.1 已启动", 3)
 end)
 
 if not ok then
-    warn("[合成核弹错误]", err)
-    notify("❌ 错误: " .. tostring(err), "", 5)
+    warn("[错误]", err)
+    if CoreGui then
+        local n = Instance.new("Frame")
+        n.Size = UDim2.new(0, 300, 0, 80); n.Position = UDim2.new(0.5, -150, 0.3, 0)
+        n.BackgroundColor3 = Color3.fromRGB(30, 30, 30); n.BorderSizePixel = 0; n.Parent = CoreGui
+        Instance.new("UICorner", n).CornerRadius = UDim.new(0, 8)
+        local t = Instance.new("TextLabel", n)
+        t.Size = UDim2.new(1, -16, 1, 0); t.Position = UDim2.new(0, 8, 0, 0)
+        t.BackgroundTransparency = 1; t.Font = Enum.Font.SourceSans; t.TextSize = 14
+        t.TextColor3 = Color3.new(1, 0, 0); t.Text = "❌ 错误: " .. tostring(err)
+    end
 end
