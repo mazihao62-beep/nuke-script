@@ -1,0 +1,657 @@
+-- ============================================================
+-- 合成一个核弹脚本
+-- 作者：b站英吉利超入_
+-- ============================================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+local character = nil
+local rootPart = nil
+
+-- ===== 通知 =====
+local function notify(title, text, duration)
+    duration = duration or 2
+    if not CoreGui then return end
+    local n = Instance.new("Frame")
+    n.Size = UDim2.new(0, 220, 0, 60)
+    n.Position = UDim2.new(1, -10, 1, -10)
+    n.AnchorPoint = Vector2.new(1, 1)
+    n.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    n.BackgroundTransparency = 0.1
+    n.BorderSizePixel = 0
+    n.ZIndex = 100
+    n.Parent = CoreGui
+    
+    local uc = Instance.new("UICorner")
+    uc.CornerRadius = UDim.new(0, 8)
+    uc.Parent = n
+    
+    local st = Instance.new("UIStroke")
+    st.Thickness = 1.5
+    st.Color = Color3.fromRGB(100, 200, 100)
+    st.Parent = n
+    
+    local tl = Instance.new("TextLabel")
+    tl.Size = UDim2.new(1, -16, 0, 20)
+    tl.Position = UDim2.new(0, 8, 0, 6)
+    tl.BackgroundTransparency = 1
+    tl.Font = Enum.Font.SourceSansBold
+    tl.TextSize = 14
+    tl.TextColor3 = Color3.new(1, 1, 1)
+    tl.TextXAlignment = Enum.TextXAlignment.Left
+    tl.Text = title
+    tl.ZIndex = 101
+    tl.Parent = n
+    
+    local cl = Instance.new("TextLabel")
+    cl.Size = UDim2.new(1, -16, 0, 18)
+    cl.Position = UDim2.new(0, 8, 0, 30)
+    cl.BackgroundTransparency = 1
+    cl.Font = Enum.Font.SourceSans
+    cl.TextSize = 13
+    cl.TextColor3 = Color3.fromRGB(220, 220, 220)
+    cl.TextXAlignment = Enum.TextXAlignment.Left
+    cl.Text = text
+    cl.ZIndex = 101
+    cl.Parent = n
+    
+    local si = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local so = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    n.Position = UDim2.new(1, 240, 1, -10)
+    TweenService:Create(n, si, {Position = UDim2.new(1, -230, 1, -10)}):Play()
+    
+    task.delay(duration, function()
+        if not n.Parent then return end
+        local ot = TweenService:Create(n, so, {Position = UDim2.new(1, 240, 1, -10)})
+        ot:Play()
+        ot.Completed:Once(function()
+            if n.Parent then n:Destroy() end
+        end)
+    end)
+end
+
+-- ===== 核弹颜色与名称 =====
+local NUKE_COLORS = {
+    Color3.fromRGB(180, 180, 180),
+    Color3.fromRGB(80, 200, 80),
+    Color3.fromRGB(50, 130, 255),
+    Color3.fromRGB(150, 0, 255),
+    Color3.fromRGB(255, 200, 50),
+    Color3.fromRGB(255, 50, 50)
+}
+
+local TIER_NAMES = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}
+
+-- ===== 核弹管理 =====
+local nukes = {}
+local maxTierUnlocked = 1
+local autoMergeOn = true
+local spawnRate = 8
+
+-- 创建核弹
+local function createNuke(tier, pos)
+    tier = math.clamp(tier, 1, 6)
+    local size = 1 + tier * 0.4
+    
+    local part = Instance.new("Part")
+    part.Size = Vector3.new(size, size, size)
+    part.Shape = Enum.PartType.Ball
+    part.Color = NUKE_COLORS[tier]
+    part.Material = Enum.Material.Neon
+    part.Anchored = false
+    part.CanCollide = true
+    part:SetAttribute("Tier", tier)
+    part:SetAttribute("State", "floor")
+    
+    local bg = Instance.new("BillboardGui")
+    bg.Size = UDim2.new(0, 100, 0, 30)
+    bg.StudsOffset = Vector3.new(0, size + 0.5, 0)
+    bg.Adornee = part
+    
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "⚡ Tier " .. tier
+    lbl.TextColor3 = NUKE_COLORS[tier]
+    lbl.Font = Enum.Font.SourceSansBold
+    lbl.TextSize = 14
+    lbl.TextStrokeTransparency = 0.3
+    lbl.Parent = bg
+    bg.Parent = part
+    
+    local att = Instance.new("Attachment")
+    att.Parent = part
+    local em = Instance.new("ParticleEmitter")
+    em.Rate = 3
+    em.Lifetime = NumberRange.new(0.5, 1)
+    em.Speed = NumberRange.new(0.3, 0.8)
+    em.SpreadAngle = Vector2.new(30, 30)
+    em.Color = ColorSequence.new(NUKE_COLORS[tier])
+    em.Texture = "rbxasset://textures/particles/sparkle_main.dds"
+    em.Parent = att
+    
+    if pos then part.Position = pos end
+    return part
+end
+
+-- 生成核弹
+local function spawnNuke(tier, pos)
+    tier = tier or math.random(1, math.min(maxTierUnlocked, 4))
+    local p = pos or Vector3.new(math.random(-30, 30), 3, math.random(-30, 30))
+    local nuke = createNuke(tier, p)
+    nuke.Parent = Workspace
+    table.insert(nukes, nuke)
+    
+    nuke.Size = Vector3.new(0.1, 0.1, 0.1)
+    TweenService:Create(nuke, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = Vector3.new(1 + tier * 0.4, 1 + tier * 0.4, 1 + tier * 0.4)
+    }):Play()
+    
+    return nuke
+end
+
+-- ===== 核心合并 =====
+local function doMerge()
+    local merged = false
+    for tier = 1, 5 do
+        local list = {}
+        for _, n in ipairs(nukes) do
+            if n and n.Parent and (n:GetAttribute("Tier") or 1) == tier and n:GetAttribute("State") == "floor" then
+                table.insert(list, n)
+            end
+        end
+        if #list >= 2 then
+            local n1, n2 = list[1], list[2]
+            local newTier = tier + 1
+            local pos = (n1.Position + n2.Position) / 2
+            
+            n1:Destroy()
+            n2:Destroy()
+            for i = #nukes, 1, -1 do
+                if nukes[i] == n1 or nukes[i] == n2 then table.remove(nukes, i) end
+            end
+            
+            local newNuke = createNuke(newTier, pos)
+            newNuke.Parent = Workspace
+            newNuke:SetAttribute("State", "floor")
+            table.insert(nukes, newNuke)
+            
+            if newTier > maxTierUnlocked then maxTierUnlocked = newTier end
+            
+            notify("🔀 合成成功!", "⚡ " .. TIER_NAMES[newTier] .. " Tier " .. newTier)
+            merged = true
+            break
+        end
+    end
+    return merged
+end
+
+-- 批量合成
+local function mergeAll()
+    local count = 0
+    local done = false
+    repeat
+        done = true
+        for tier = 1, 5 do
+            local list = {}
+            for _, n in ipairs(nukes) do
+                if n and n.Parent and (n:GetAttribute("Tier") or 1) == tier and n:GetAttribute("State") == "floor" then
+                    table.insert(list, n)
+                end
+            end
+            if #list >= 2 then
+                local n1, n2 = list[1], list[2]
+                local newTier = tier + 1
+                local pos = (n1.Position + n2.Position) / 2
+                
+                n1:Destroy()
+                n2:Destroy()
+                for i = #nukes, 1, -1 do
+                    if nukes[i] == n1 or nukes[i] == n2 then table.remove(nukes, i) end
+                end
+                
+                local nn = createNuke(newTier, pos)
+                nn.Parent = Workspace
+                nn:SetAttribute("State", "floor")
+                table.insert(nukes, nn)
+                
+                if newTier > maxTierUnlocked then maxTierUnlocked = newTier end
+                count = count + 1
+                done = false
+                break
+            end
+        end
+    until done
+    
+    if count > 0 then notify("🔀🔥 批量合成完成!", "共合成 " .. count .. " 次")
+    else notify("⚠️ 提示", "没有可合成的核弹") end
+    return count
+end
+-- ============================================================
+-- 合成一个核弹脚本
+-- 作者：b站英吉利超入_
+-- ============================================================
+
+-- ===== 自动合并循环 =====
+local function startAutoMerge()
+    task.spawn(function()
+        while true do
+            task.wait(2)
+            if autoMergeOn then
+                local any = false
+                repeat any = doMerge() until not any
+            end
+        end
+    end)
+end
+
+-- ===== 生成循环 =====
+local function startSpawnLoop()
+    task.spawn(function()
+        while true do
+            task.wait(1)
+            if #nukes < 40 and math.random(1, spawnRate) == 1 then
+                local weights = {}
+                local maxT = math.min(maxTierUnlocked, 4)
+                for t = 1, maxT do
+                    for _ = 1, maxT - t + 1 do table.insert(weights, t) end
+                end
+                spawnNuke(weights[math.random(1, #weights)])
+            end
+        end
+    end)
+end
+
+-- ===== 清理无效核弹 =====
+local function cleanNukes()
+    for i = #nukes, 1, -1 do
+        if not nukes[i] or not nukes[i].Parent then table.remove(nukes, i) end
+    end
+end
+
+-- ===== 角色绑定 =====
+local function onCharacterAdded(char)
+    character = char
+    rootPart = char:WaitForChild("HumanoidRootPart", 5)
+    if not rootPart then character = nil end
+end
+
+if player.Character then onCharacterAdded(player.Character) end
+player.CharacterAdded:Connect(onCharacterAdded)
+
+-- ===== UI =====
+local function createUI()
+    if CoreGui:FindFirstChild("MergeNukeUI") then CoreGui:FindFirstChild("MergeNukeUI"):Destroy() end
+    
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "MergeNukeUI"
+    sg.Parent = CoreGui
+    
+    local mf = Instance.new("Frame")
+    mf.Size = UDim2.new(0, 300, 0, 320)
+    mf.Position = UDim2.new(0.5, -150, 0.4, -160)
+    mf.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    mf.BackgroundTransparency = 0.05
+    mf.BorderSizePixel = 0
+    mf.Active = true
+    mf.Draggable = true
+    mf.ClipsDescendants = true
+    mf.Parent = sg
+    
+    local mc = Instance.new("UICorner")
+    mc.CornerRadius = UDim.new(0, 10)
+    mc.Parent = mf
+    
+    local ms = Instance.new("UIStroke")
+    ms.Thickness = 2
+    ms.Color = Color3.fromRGB(255, 100, 100)
+    ms.Parent = mf
+    
+    local tb = Instance.new("Frame")
+    tb.Size = UDim2.new(1, 0, 0, 32)
+    tb.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    tb.BorderSizePixel = 0
+    tb.Parent = mf
+    
+    local tc = Instance.new("UICorner")
+    tc.CornerRadius = UDim.new(0, 10)
+    tc.Parent = tb
+    
+    local tl = Instance.new("TextLabel")
+    tl.Size = UDim2.new(1, -70, 1, 0)
+    tl.Position = UDim2.new(0, 12, 0, 0)
+    tl.BackgroundTransparency = 1
+    tl.Font = Enum.Font.SourceSansBold
+    tl.TextSize = 16
+    tl.TextColor3 = Color3.new(1, 1, 1)
+    tl.TextXAlignment = Enum.TextXAlignment.Left
+    tl.Text = "☢️ 合成一个核弹脚本"
+    tl.TextScaled = true
+    tl.Parent = tb
+    
+    local al = Instance.new("TextLabel")
+    al.Size = UDim2.new(0, 120, 0, 14)
+    al.Position = UDim2.new(1, -128, 0, 32)
+    al.BackgroundTransparency = 1
+    al.Font = Enum.Font.SourceSans
+    al.TextSize = 10
+    al.TextColor3 = Color3.fromRGB(150, 150, 150)
+    al.TextXAlignment = Enum.TextXAlignment.Right
+    al.Text = "by b站英吉利超入_"
+    al.Parent = mf
+    
+    local minBtn = Instance.new("TextButton")
+    minBtn.Size = UDim2.new(0, 24, 0, 24)
+    minBtn.Position = UDim2.new(1, -56, 0, 4)
+    minBtn.Text = "—"
+    minBtn.Font = Enum.Font.SourceSansBold
+    minBtn.TextSize = 14
+    minBtn.TextColor3 = Color3.new(1, 1, 1)
+    minBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    minBtn.BorderSizePixel = 0
+    minBtn.Parent = tb
+    Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 4)
+    
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 24, 0, 24)
+    closeBtn.Position = UDim2.new(1, -28, 0, 4)
+    closeBtn.Text = "✕"
+    closeBtn.Font = Enum.Font.SourceSansBold
+    closeBtn.TextSize = 14
+    closeBtn.TextColor3 = Color3.new(1, 1, 1)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Parent = tb
+    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
+    
+    local info = Instance.new("Frame")
+    info.Size = UDim2.new(1, -24, 0, 40)
+    info.Position = UDim2.new(0, 12, 0, 36)
+    info.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    info.BorderSizePixel = 0
+    info.Parent = mf
+    Instance.new("UICorner", info).CornerRadius = UDim.new(0, 6)
+    
+    local nukeCount = Instance.new("TextLabel")
+    nukeCount.Size = UDim2.new(0.5, -4, 1, 0)
+    nukeCount.Position = UDim2.new(0, 8, 0, 0)
+    nukeCount.BackgroundTransparency = 1
+    nukeCount.Font = Enum.Font.SourceSansBold
+    nukeCount.TextSize = 14
+    nukeCount.TextColor3 = Color3.fromRGB(180, 180, 255)
+    nukeCount.TextXAlignment = Enum.TextXAlignment.Left
+    nukeCount.Text = "💣 " .. #nukes .. " 个"
+    nukeCount.Parent = info
+    
+    local maxTierLabel = Instance.new("TextLabel")
+    maxTierLabel.Size = UDim2.new(0.5, -4, 1, 0)
+    maxTierLabel.Position = UDim2.new(0.5, 4, 0, 0)
+    maxTierLabel.BackgroundTransparency = 1
+    maxTierLabel.Font = Enum.Font.SourceSansBold
+    maxTierLabel.TextSize = 14
+    maxTierLabel.TextColor3 = NUKE_COLORS[maxTierUnlocked]
+    maxTierLabel.TextXAlignment = Enum.TextXAlignment.Right
+    maxTierLabel.Text = "🏆 " .. TIER_NAMES[maxTierUnlocked]
+    maxTierLabel.Parent = info
+    
+    local sf = Instance.new("ScrollingFrame")
+    sf.Size = UDim2.new(1, -24, 1, -88)
+    sf.Position = UDim2.new(0, 12, 0, 82)
+    sf.BackgroundTransparency = 1
+    sf.BorderSizePixel = 0
+    sf.ScrollBarThickness = 4
+    sf.CanvasSize = UDim2.new(0, 0, 0, 0)
+    sf.Parent = mf
+    
+    local layout = Instance.new("UIListLayout")
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 6)
+    layout.Parent = sf
+    
+    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        sf.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10)
+    end)
+    
+    local function btn(text, color)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, 0, 0, 38)
+        b.Text = text
+        b.BackgroundColor3 = color or Color3.fromRGB(60, 160, 60)
+        b.TextColor3 = Color3.new(1, 1, 1)
+        b.Font = Enum.Font.SourceSansBold
+        b.TextSize = 16
+        b.Parent = sf
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+        return b
+    end
+    
+    local function toggle(text, default, onChange)
+        local f = Instance.new("Frame")
+        f.Size = UDim2.new(1, 0, 0, 38)
+        f.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        f.BorderSizePixel = 0
+        f.Parent = sf
+        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
+        
+        local lb = Instance.new("TextLabel")
+        lb.Size = UDim2.new(1, -50, 1, 0)
+        lb.Position = UDim2.new(0, 10, 0, 0)
+        lb.BackgroundTransparency = 1
+        lb.Font = Enum.Font.SourceSans
+        lb.TextSize = 14
+        lb.TextColor3 = Color3.new(1, 1, 1)
+        lb.TextXAlignment = Enum.TextXAlignment.Left
+        lb.Text = text
+        lb.Parent = f
+        
+        local on = default
+        local ind = Instance.new("Frame")
+        ind.Size = UDim2.new(0, 36, 0, 20)
+        ind.Position = UDim2.new(1, -44, 0.5, -10)
+        ind.BackgroundColor3 = on and Color3.fromRGB(60, 200, 60) or Color3.fromRGB(120, 120, 120)
+        ind.BorderSizePixel = 0
+        ind.Parent = f
+        Instance.new("UICorner", ind).CornerRadius = UDim.new(0, 10)
+        
+        local dot = Instance.new("Frame")
+        dot.Size = UDim2.new(0, 16, 0, 16)
+        dot.Position = on and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+        dot.BackgroundColor3 = Color3.new(1, 1, 1)
+        dot.BorderSizePixel = 0
+        dot.Parent = ind
+        Instance.new("UICorner", dot).CornerRadius = UDim.new(0, 8)
+        
+        local btnBg = Instance.new("TextButton")
+        btnBg.Size = UDim2.new(1, 0, 1, 0)
+        btnBg.BackgroundTransparency = 1
+        btnBg.Text = ""
+        btnBg.Parent = f
+        
+        btnBg.MouseButton1Click:Connect(function()
+            on = not on
+            ind.BackgroundColor3 = on and Color3.fromRGB(60, 200, 60) or Color3.fromRGB(120, 120, 120)
+            dot:TweenPosition(on and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8),
+                Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+            if onChange then onChange(on) end
+        end)
+        return {Get = function() return on end, Set = function(v) on = v; ind.BackgroundColor3 = on and Color3.fromRGB(60,200,60) or Color3.fromRGB(120,120,120); dot.Position = on and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8) end}
+    end
+    
+    local function section(text)
+        local f = Instance.new("Frame")
+        f.Size = UDim2.new(1, 0, 0, 20)
+        f.BackgroundTransparency = 1
+        f.Parent = sf
+        
+        local ln = Instance.new("Frame")
+        ln.Size = UDim2.new(1, 0, 0, 1)
+        ln.Position = UDim2.new(0, 0, 1, -1)
+        ln.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+        ln.BorderSizePixel = 0
+        ln.Parent = f
+        
+        local lb = Instance.new("TextLabel")
+        lb.Size = UDim2.new(1, 0, 1, 0)
+        lb.BackgroundTransparency = 1
+        lb.Font = Enum.Font.SourceSansBold
+        lb.TextSize = 13
+        lb.TextColor3 = Color3.fromRGB(180, 180, 180)
+        lb.Text = text
+        lb.TextXAlignment = Enum.TextXAlignment.Left
+        lb.Parent = f
+    end
+-- ============================================================
+-- 合成一个核弹脚本
+-- 作者：b站英吉利超入_
+-- ============================================================
+
+    -- ===== 构建UI内容 =====
+    section("🔀 合成操作")
+    
+    local mergeBtn = btn("🔀 手动合成一次", Color3.fromRGB(120, 60, 200))
+    mergeBtn.MouseButton1Click:Connect(function()
+        cleanNukes()
+        doMerge()
+    end)
+    
+    local mergeAllBtn = btn("🔀🔥 一键批量合成", Color3.fromRGB(180, 60, 200))
+    mergeAllBtn.MouseButton1Click:Connect(function()
+        cleanNukes()
+        mergeAll()
+    end)
+    
+    section("⚙️ 设置")
+    
+    local autoToggle = toggle("🔄 自动合成", autoMergeOn, function(v)
+        autoMergeOn = v
+    end)
+    
+    local spawnBtn = btn("🧪 生成测试核弹", Color3.fromRGB(60, 160, 160))
+    spawnBtn.MouseButton1Click:Connect(function()
+        cleanNukes()
+        if rootPart then
+            local t = math.random(1, math.min(maxTierUnlocked, 4))
+            spawnNuke(t, rootPart.Position + Vector3.new(math.random(-3, 3), 2, math.random(-3, 3)))
+        end
+    end)
+    
+    section("📊 信息")
+    
+    local statText = Instance.new("TextLabel")
+    statText.Size = UDim2.new(1, 0, 0, 60)
+    statText.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    statText.BorderSizePixel = 0
+    statText.Font = Enum.Font.SourceSans
+    statText.TextSize = 13
+    statText.TextColor3 = Color3.fromRGB(200, 200, 200)
+    statText.TextXAlignment = Enum.TextXAlignment.Left
+    statText.TextYAlignment = Enum.TextYAlignment.Top
+    statText.Parent = sf
+    Instance.new("UICorner", statText).CornerRadius = UDim.new(0, 6)
+    
+    task.spawn(function()
+        while true do
+            task.wait(2)
+            cleanNukes()
+            nukeCount.Text = "💣 " .. #nukes .. " 个"
+            maxTierLabel.Text = "🏆 " .. TIER_NAMES[maxTierUnlocked]
+            maxTierLabel.TextColor3 = NUKE_COLORS[maxTierUnlocked]
+            statText.Text = string.format("场上核弹: %d 个\n最高等级: %s (Tier %d)\n自动合成: %s",
+                #nukes, TIER_NAMES[maxTierUnlocked], maxTierUnlocked, autoMergeOn and "✅ 开启" or "❌ 关闭")
+        end
+    end)
+    
+    -- 悬浮窗
+    local ff = Instance.new("Frame")
+    ff.Size = UDim2.new(0, 200, 0, 30)
+    ff.Position = UDim2.new(0.5, -100, 0, 10)
+    ff.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    ff.BackgroundTransparency = 0.1
+    ff.BorderSizePixel = 0
+    ff.Visible = false
+    ff.Active = true
+    ff.Draggable = true
+    ff.Parent = sg
+    
+    local ffc = Instance.new("UICorner")
+    ffc.CornerRadius = UDim.new(0, 15)
+    ffc.Parent = ff
+    
+    local ffs = Instance.new("UIStroke")
+    ffs.Thickness = 1.5
+    ffs.Color = Color3.fromRGB(255, 100, 100)
+    ffs.Parent = ff
+    
+    local ffl = Instance.new("TextLabel")
+    ffl.Size = UDim2.new(1, 0, 1, 0)
+    ffl.BackgroundTransparency = 1
+    ffl.Font = Enum.Font.SourceSansBold
+    ffl.TextSize = 14
+    ffl.TextColor3 = Color3.new(1, 1, 1)
+    ffl.Text = "☢️ 合成核弹运行中"
+    ffl.TextXAlignment = Enum.TextXAlignment.Center
+    ffl.Parent = ff
+    
+    local ts = nil
+    ff.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            ts = i.Position
+        end
+    end)
+    ff.InputEnded:Connect(function(i)
+        if ts and (i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch) then
+            if (i.Position - ts).Magnitude < 5 then
+                mf.Visible = true; ff.Visible = false
+            end
+            ts = nil
+        end
+    end)
+    
+    minBtn.MouseButton1Click:Connect(function()
+        mf.Visible = false; ff.Visible = true
+    end)
+    closeBtn.MouseButton1Click:Connect(function()
+        sg:Destroy()
+    end)
+    
+    -- 彩虹边框
+    local rb = RunService.Heartbeat:Connect(function()
+        local h = (tick() * 0.3) % 1
+        local c = Color3.fromHSV(h, 1, 1)
+        if ms and ms.Parent then ms.Color = c end
+        if ffs and ffs.Parent then ffs.Color = c end
+    end)
+    sg.Destroying:Connect(function() rb:Disconnect() end)
+    
+    return sg
+end
+
+-- ===== 启动 =====
+local function init()
+    print("===== ☢️ 合成一个核弹脚本 =====")
+    print("作者: b站英吉利超入_")
+    
+    startSpawnLoop()
+    startAutoMerge()
+    createUI()
+    
+    task.delay(0.5, function()
+        for i = 1, 4 do
+            spawnNuke(math.random(1, 2))
+            task.wait(0.2)
+        end
+        notify("☢️ 合成一个核弹", "自动合成已开启 | by b站英吉利超入_")
+    end)
+end
+
+local ok, err = pcall(init)
+if not ok then
+    warn("[错误]", err)
+    notify("❌ 错误", tostring(err), 5)
+end
