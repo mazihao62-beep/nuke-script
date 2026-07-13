@@ -3,26 +3,24 @@
 -- 作者：b站英吉利超入_
 -- ============================================================
 
--- ===== 服务与全局变量 =====
+-- ===== 服务 =====
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
-local Debris = game:GetService("Debris")
 local UserInputService = game:GetService("UserInputService")
 
-math.randomseed(tick())
-
 local player = Players.LocalPlayer
-local character = nil
-local rootPart = nil
 
--- ===== 通知系统（源码NotificationHandler风格） =====
+-- ===== 获取合并远程事件 =====
+local Remotes = require(game:GetService("ReplicatedStorage").Packages.Remotes)
+local MergeRequest = Remotes.MergeRequest
+
+-- ===== 通知 =====
 local function notify(title, text, dur)
     dur = dur or 2
     if not CoreGui then return end
-    
     local n = Instance.new("Frame")
     n.Size = UDim2.new(0, 220, 0, 60)
     n.Position = UDim2.new(1, -10, 1, -10)
@@ -32,13 +30,9 @@ local function notify(title, text, dur)
     n.BorderSizePixel = 0
     n.ZIndex = 100
     n.Parent = CoreGui
-    
     Instance.new("UICorner", n).CornerRadius = UDim.new(0, 8)
-    
     local s = Instance.new("UIStroke", n)
-    s.Thickness = 1.5
-    s.Color = Color3.fromRGB(100, 200, 100)
-    
+    s.Thickness = 1.5; s.Color = Color3.fromRGB(100, 200, 100)
     local t1 = Instance.new("TextLabel", n)
     t1.Size = UDim2.new(1, -16, 0, 20)
     t1.Position = UDim2.new(0, 8, 0, 6)
@@ -47,9 +41,7 @@ local function notify(title, text, dur)
     t1.TextSize = 14
     t1.TextColor3 = Color3.new(1, 1, 1)
     t1.TextXAlignment = Enum.TextXAlignment.Left
-    t1.Text = title
-    t1.ZIndex = 101
-    
+    t1.Text = title; t1.ZIndex = 101
     local t2 = Instance.new("TextLabel", n)
     t2.Size = UDim2.new(1, -16, 0, 18)
     t2.Position = UDim2.new(0, 8, 0, 30)
@@ -58,237 +50,153 @@ local function notify(title, text, dur)
     t2.TextSize = 13
     t2.TextColor3 = Color3.fromRGB(220, 220, 220)
     t2.TextXAlignment = Enum.TextXAlignment.Left
-    t2.Text = text
-    t2.ZIndex = 101
-    
-    -- 滑入动画
+    t2.Text = text; t2.ZIndex = 101
     n.Position = UDim2.new(1, 240, 1, -10)
     TweenService:Create(n, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
         Position = UDim2.new(1, -230, 1, -10)
     }):Play()
-    
-    -- 延迟滑出销毁
     task.delay(dur, function()
         if not n.Parent then return end
         local ot = TweenService:Create(n, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
             Position = UDim2.new(1, 240, 1, -10)
         })
         ot:Play()
-        ot.Completed:Once(function()
-            if n.Parent then n:Destroy() end
-        end)
+        ot.Completed:Once(function() if n.Parent then n:Destroy() end end)
     end)
 end
 
--- ===== 核弹数据（源码HelperModule风格） =====
+-- ===== 等级颜色 =====
 local TIER_COLORS = {
-    Color3.fromRGB(180, 180, 180),  -- 1 Common
-    Color3.fromRGB(80, 200, 80),    -- 2 Uncommon
-    Color3.fromRGB(50, 130, 255),   -- 3 Rare
-    Color3.fromRGB(150, 0, 255),    -- 4 Epic
-    Color3.fromRGB(255, 200, 50),   -- 5 Legendary
-    Color3.fromRGB(255, 50, 50)     -- 6 Mythic
+    Color3.fromRGB(180, 180, 180),
+    Color3.fromRGB(80, 200, 80),
+    Color3.fromRGB(50, 130, 255),
+    Color3.fromRGB(150, 0, 255),
+    Color3.fromRGB(255, 200, 50),
+    Color3.fromRGB(255, 50, 50)
 }
-
 local TIER_NAMES = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}
 
 -- ===== 全局状态 =====
-local nukes = {}          -- 场景中所有核弹
-local maxTier = 1         -- 当前最高解锁等级
-local autoOn = true       -- 自动合成开关
+local myNukesFolder = nil  -- 玩家的核弹文件夹
+local autoOn = true
+local mergeCooldown = 0
 
--- ===== 创建核弹模型（源码Apache_Commander_Animate风格） =====
-local function makeNuke(tier, pos)
-    tier = math.clamp(tier, 1, 6)
-    local size = 1 + tier * 0.4
+-- ===== 查找玩家的核弹文件夹（源码findMyNukesFolder逻辑） =====
+local function findMyNukesFolder()
+    if myNukesFolder and myNukesFolder.Parent then
+        return myNukesFolder
+    end
+    myNukesFolder = nil
     
-    local p = Instance.new("Part")
-    p.Name = "Nuke"
-    p.Size = Vector3.new(size, size, size)
-    p.Shape = Enum.PartType.Ball
-    p.Color = TIER_COLORS[tier]
-    p.Material = Enum.Material.Neon
-    p.Anchored = false
-    p.CanCollide = true
-    p.CanTouch = true
+    local bases = Workspace:FindFirstChild("Bases")
+    if not bases then return nil end
     
-    -- 属性标记（源码用Attribute标记Tier和State）
-    p:SetAttribute("Tier", tier)
-    p:SetAttribute("State", "floor")
-    
-    if pos then p.Position = pos end
-    
-    -- 等级标签（BillboardGui）
-    local bg = Instance.new("BillboardGui")
-    bg.Name = "TierTag"
-    bg.Size = UDim2.new(0, 100, 0, 30)
-    bg.StudsOffset = Vector3.new(0, size + 0.5, 0)
-    bg.Adornee = p
-    bg.AlwaysOnTop = true
-    
-    local lbl = Instance.new("TextLabel", bg)
-    lbl.Size = UDim2.new(1, 0, 1, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = "Tier " .. tier
-    lbl.TextColor3 = TIER_COLORS[tier]
-    lbl.Font = Enum.Font.SourceSansBold
-    lbl.TextSize = 14
-    lbl.TextStrokeTransparency = 0.3
-    bg.Parent = p
-    
-    -- 粒子特效（源码ParticleEmitter风格）
-    local att = Instance.new("Attachment", p)
-    local em = Instance.new("ParticleEmitter", att)
-    em.Rate = 3
-    em.Lifetime = NumberRange.new(0.5, 1)
-    em.Speed = NumberRange.new(0.3, 0.8)
-    em.SpreadAngle = Vector2.new(30, 30)
-    em.Color = ColorSequence.new(TIER_COLORS[tier])
-    em.Texture = "rbxasset://textures/particles/sparkle_main.dds"
-    em.Enabled = true
-    
-    return p
+    for _, base in ipairs(bases:GetChildren()) do
+        local nukes = base:FindFirstChild("Nukes")
+        if nukes then
+            for _, nuke in ipairs(nukes:GetChildren()) do
+                if nuke:GetAttribute("OwnerUserId") == player.UserId then
+                    myNukesFolder = nukes
+                    return nukes
+                end
+            end
+        end
+    end
+    return nil
 end
 
--- ===== 在玩家附近生成核弹 =====
-local function spawnNukeNearPlayer()
-    if not rootPart then return nil end
+-- ===== 获取玩家基地中所有真实核弹 =====
+local function getMyNukes()
+    local folder = findMyNukesFolder()
+    if not folder then return {} end
     
-    local tier = math.random(1, math.min(maxTier, 3))
-    local angle = math.random() * math.pi * 2
-    local dist = math.random(5, 15)
-    local pos = rootPart.Position + Vector3.new(
-        math.cos(angle) * dist,
-        2,
-        math.sin(angle) * dist
-    )
+    local list = {}
+    for _, child in ipairs(folder:GetChildren()) do
+        if (child:IsA("BasePart") or child:IsA("Model")) and child:GetAttribute("Tier") then
+            table.insert(list, child)
+        end
+    end
+    return list
+end
+
+-- ===== 核心：合并两个同等级的真实核弹 =====
+local function tryMerge()
+    local now = os.clock()
+    if now < mergeCooldown then return false end
     
-    local n = makeNuke(tier, pos)
-    n.Parent = Workspace
-    table.insert(nukes, n)
+    local nukes = getMyNukes()
+    if #nukes < 2 then return false end
     
-    -- 出生缩放动画
-    n.Size = Vector3.new(0.1, 0.1, 0.1)
-    local tween = TweenService:Create(n, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-        Size = Vector3.new(1 + tier * 0.4, 1 + tier * 0.4, 1 + tier * 0.4)
-    })
-    tween:Play()
-    
-    return n
+    -- 从低到高遍历等级
+    for tier = 1, 5 do
+        local sameTier = {}
+        for _, n in ipairs(nukes) do
+            if n:GetAttribute("Tier") == tier then
+                table.insert(sameTier, n)
+            end
+        end
+        
+        if #sameTier >= 2 then
+            local target = sameTier[1]
+            
+            -- 调用服务端合并接口（源码MergeRequest:FireServer逻辑）
+            local success = pcall(function()
+                MergeRequest:FireServer(target)
+            end)
+            
+            if success then
+                mergeCooldown = now + 0.3
+                notify("🔀 合并请求已发送", "Tier " .. tier .. " → " .. TIER_NAMES[tier])
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- ===== 批量合并 =====
+local function mergeAll()
+    local count = 0
+    local maxAttempts = 30  -- 防止死循环
+    for i = 1, maxAttempts do
+        if tryMerge() then
+            count = count + 1
+            task.wait(0.1)
+        else
+            break
+        end
+    end
+    if count > 0 then
+        notify("🔥 批量完成", "共发送 " .. count .. " 次合并请求")
+    else
+        notify("ℹ️ 提示", "没有可合并的核弹")
+    end
+    return count
 end
 -- ============================================================
 -- 合成一个核弹脚本
 -- 作者：b站英吉利超入_
 -- ============================================================
 
--- ===== 清理无效核弹引用 =====
-local function cleanNukes()
-    for i = #nukes, 1, -1 do
-        local n = nukes[i]
-        if not n or not n.Parent then
-            table.remove(nukes, i)
-        end
-    end
-end
-
--- ===== 核心：合并两个同等级核弹（源码MergeController逻辑） =====
-local function tryMerge()
-    cleanNukes()
-    if #nukes < 2 then return false end
-    
-    -- 从低到高遍历等级
-    for tier = 1, 5 do
-        local list = {}
-        for _, n in ipairs(nukes) do
-            if n:GetAttribute("Tier") == tier and n:GetAttribute("State") == "floor" then
-                table.insert(list, n)
+-- ===== 自动合并循环 =====
+local function startAutoMerge()
+    task.spawn(function()
+        while true do
+            task.wait(2)
+            if autoOn then
+                local merged = false
+                repeat
+                    merged = tryMerge()
+                    if merged then task.wait(0.3) end
+                until not merged
             end
         end
-        
-        if #list >= 2 then
-            local n1 = list[1]
-            local n2 = list[2]
-            local newTier = tier + 1
-            
-            -- 取两个核弹的中点位置
-            local pos = (n1.Position + n2.Position) / 2
-            
-            -- 销毁旧的
-            n1:Destroy()
-            n2:Destroy()
-            for i = #nukes, 1, -1 do
-                if nukes[i] == n1 or nukes[i] == n2 then
-                    table.remove(nukes, i)
-                end
-            end
-            
-            -- 创建新的更高等级核弹
-            local nn = makeNuke(newTier, pos)
-            nn.Parent = Workspace
-            table.insert(nukes, nn)
-            
-            -- 更新最高等级
-            if newTier > maxTier then
-                maxTier = newTier
-            end
-            
-            notify("🔀 合成成功", TIER_NAMES[newTier] .. " Tier " .. newTier)
-            return true
-        end
-    end
-    
-    return false
+    end)
 end
-
--- ===== 批量合成（一直合到不能合为止） =====
-local function mergeAll()
-    cleanNukes()
-    local count = 0
-    
-    while tryMerge() do
-        count = count + 1
-    end
-    
-    if count > 0 then
-        notify("🔥 批量完成", "共合成 " .. count .. " 次")
-    else
-        notify("ℹ️ 提示", "没有可合成的核弹")
-    end
-    
-    return count
-end
-
--- ===== 角色绑定（源码CharacterAdded事件） =====
-local function onCharacterAdded(char)
-    character = char
-    rootPart = char:WaitForChild("HumanoidRootPart", 5)
-    
-    if not rootPart then
-        character = nil
-        warn("[合成核弹] 角色没有HumanoidRootPart")
-        return
-    end
-    
-    -- 监听死亡，死亡时清空引用
-    local hum = char:FindFirstChild("Humanoid")
-    if hum then
-        hum.Died:Connect(function()
-            character = nil
-            rootPart = nil
-        end)
-    end
-end
-
--- 绑定当前角色和未来角色
-if player.Character then
-    onCharacterAdded(player.Character)
-end
-player.CharacterAdded:Connect(onCharacterAdded)
 
 -- ===== 键盘快捷键 =====
 UserInputService.InputBegan:Connect(function(input, gpo)
     if gpo then return end
-    
     if input.KeyCode == Enum.KeyCode.M then
         tryMerge()
     elseif input.KeyCode == Enum.KeyCode.N then
@@ -296,9 +204,8 @@ UserInputService.InputBegan:Connect(function(input, gpo)
     end
 end)
 
--- ===== 构建UI（CoreGui持久化） =====
+-- ===== 构建UI =====
 local function buildUI()
-    -- 防止重复创建
     local existing = CoreGui:FindFirstChild("NukeMergeUI")
     if existing then existing:Destroy() end
     
@@ -306,10 +213,9 @@ local function buildUI()
     sg.Name = "NukeMergeUI"
     sg.Parent = CoreGui
     
-    -- 主窗口
     local mf = Instance.new("Frame")
-    mf.Size = UDim2.new(0, 280, 0, 270)
-    mf.Position = UDim2.new(0.5, -140, 0.4, -135)
+    mf.Size = UDim2.new(0, 280, 0, 280)
+    mf.Position = UDim2.new(0.5, -140, 0.4, -140)
     mf.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
     mf.BackgroundTransparency = 0.05
     mf.BorderSizePixel = 0
@@ -322,7 +228,6 @@ local function buildUI()
     local stroke = Instance.new("UIStroke", mf)
     stroke.Thickness = 2
     stroke.Color = Color3.fromRGB(255, 100, 100)
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     
     -- 标题栏
     local tb = Instance.new("Frame")
@@ -343,7 +248,6 @@ local function buildUI()
     title.Text = "☢️ 合成核弹脚本"
     title.TextScaled = true
     
-    -- 作者标签
     local author = Instance.new("TextLabel")
     author.Size = UDim2.new(0, 120, 0, 14)
     author.Position = UDim2.new(1, -128, 0, 32)
@@ -355,7 +259,6 @@ local function buildUI()
     author.Text = "by b站英吉利超入_"
     author.Parent = mf
     
-    -- 最小化按钮
     local minB = Instance.new("TextButton", tb)
     minB.Size = UDim2.new(0, 24, 0, 24)
     minB.Position = UDim2.new(1, -56, 0, 4)
@@ -367,7 +270,6 @@ local function buildUI()
     minB.BorderSizePixel = 0
     Instance.new("UICorner", minB).CornerRadius = UDim.new(0, 4)
     
-    -- 关闭按钮
     local closeB = Instance.new("TextButton", tb)
     closeB.Size = UDim2.new(0, 24, 0, 24)
     closeB.Position = UDim2.new(1, -28, 0, 4)
@@ -396,23 +298,19 @@ local function buildUI()
     cntLbl.TextSize = 14
     cntLbl.TextColor3 = Color3.fromRGB(180, 180, 255)
     cntLbl.TextXAlignment = Enum.TextXAlignment.Left
-    cntLbl.Text = "💣 " .. #nukes .. " 个"
+    cntLbl.Text = "💣 扫描中..."
     
-    local tierLbl = Instance.new("TextLabel", info)
-    tierLbl.Size = UDim2.new(0.5, -4, 1, 0)
-    tierLbl.Position = UDim2.new(0.5, 4, 0, 0)
-    tierLbl.BackgroundTransparency = 1
-    tierLbl.Font = Enum.Font.SourceSansBold
-    tierLbl.TextSize = 14
-    tierLbl.TextColor3 = TIER_COLORS[maxTier]
-    tierLbl.TextXAlignment = Enum.TextXAlignment.Right
-    tierLbl.Text = "🏆 " .. TIER_NAMES[maxTier]
--- ============================================================
--- 合成一个核弹脚本
--- 作者：b站英吉利超入_
--- ============================================================
+    local maxTierLbl = Instance.new("TextLabel", info)
+    maxTierLbl.Size = UDim2.new(0.5, -4, 1, 0)
+    maxTierLbl.Position = UDim2.new(0.5, 4, 0, 0)
+    maxTierLbl.BackgroundTransparency = 1
+    maxTierLbl.Font = Enum.Font.SourceSansBold
+    maxTierLbl.TextSize = 14
+    maxTierLbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+    maxTierLbl.TextXAlignment = Enum.TextXAlignment.Right
+    maxTierLbl.Text = "🏆 等待数据"
 
-    -- ===== 内容滚动区域 =====
+    -- 内容滚动区
     local sf = Instance.new("ScrollingFrame")
     sf.Size = UDim2.new(1, -24, 1, -84)
     sf.Position = UDim2.new(0, 12, 0, 78)
@@ -430,7 +328,7 @@ local function buildUI()
         sf.CanvasSize = UDim2.new(0, 0, 0, ly.AbsoluteContentSize.Y + 10)
     end)
     
-    -- ===== UI辅助函数 =====
+    -- 辅助：按钮
     local function addBtn(text, color)
         local b = Instance.new("TextButton", sf)
         b.Size = UDim2.new(1, 0, 0, 38)
@@ -443,6 +341,7 @@ local function buildUI()
         return b
     end
     
+    -- 辅助：开关
     local function addSwitch(text, default, callback)
         local f = Instance.new("Frame", sf)
         f.Size = UDim2.new(1, 0, 0, 38)
@@ -484,10 +383,7 @@ local function buildUI()
             ind.BackgroundColor3 = on and Color3.fromRGB(60, 200, 60) or Color3.fromRGB(120, 120, 120)
             dot:TweenPosition(
                 on and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8),
-                Enum.EasingDirection.Out,
-                Enum.EasingStyle.Quad,
-                0.15,
-                true
+                Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true
             )
             if callback then callback(on) end
         end)
@@ -497,13 +393,11 @@ local function buildUI()
         local f = Instance.new("Frame", sf)
         f.Size = UDim2.new(1, 0, 0, 20)
         f.BackgroundTransparency = 1
-        
         local ln = Instance.new("Frame", f)
         ln.Size = UDim2.new(1, 0, 0, 1)
         ln.Position = UDim2.new(0, 0, 1, -1)
         ln.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
         ln.BorderSizePixel = 0
-        
         local lb = Instance.new("TextLabel", f)
         lb.Size = UDim2.new(1, 0, 1, 0)
         lb.BackgroundTransparency = 1
@@ -513,29 +407,31 @@ local function buildUI()
         lb.Text = text
         lb.TextXAlignment = Enum.TextXAlignment.Left
     end
-    
+-- ============================================================
+-- 合成一个核弹脚本
+-- 作者：b站英吉利超入_
+-- ============================================================
+
     -- ===== 构建UI内容 =====
-    addSection("🔀 合成操作")
+    addSection("🔀 合并操作")
     
-    addBtn("🔀 手动合成一次 (M)", Color3.fromRGB(120, 60, 200)).MouseButton1Click:Connect(function()
-        cleanNukes()
+    addBtn("🔀 手动合并一次 (M)", Color3.fromRGB(120, 60, 200)).MouseButton1Click:Connect(function()
         tryMerge()
     end)
     
-    addBtn("🔥 一键批量合成 (N)", Color3.fromRGB(180, 60, 200)).MouseButton1Click:Connect(function()
-        cleanNukes()
+    addBtn("🔥 一键批量合并 (N)", Color3.fromRGB(180, 60, 200)).MouseButton1Click:Connect(function()
         mergeAll()
     end)
     
     addSection("⚙️ 设置")
-    addSwitch("🔄 自动合成", autoOn, function(v)
+    addSwitch("🔄 自动合并", autoOn, function(v)
         autoOn = v
     end)
     
     addSection("📊 实时信息")
     
     local st = Instance.new("TextLabel", sf)
-    st.Size = UDim2.new(1, 0, 0, 50)
+    st.Size = UDim2.new(1, 0, 0, 60)
     st.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
     st.BorderSizePixel = 0
     st.Font = Enum.Font.SourceSans
@@ -545,25 +441,38 @@ local function buildUI()
     st.TextYAlignment = Enum.TextYAlignment.Top
     Instance.new("UICorner", st).CornerRadius = UDim.new(0, 6)
     
-    -- 定时刷新UI信息
+    -- 定时刷新信息
     task.spawn(function()
         while sg and sg.Parent do
-            task.wait(1)
-            cleanNukes()
-            cntLbl.Text = "💣 " .. #nukes .. " 个"
-            tierLbl.Text = "🏆 " .. TIER_NAMES[maxTier]
-            tierLbl.TextColor3 = TIER_COLORS[maxTier]
+            task.wait(1.5)
+            local nukes = getMyNukes()
+            local count = #nukes
+            local maxT = 0
+            for _, n in ipairs(nukes) do
+                local t = n:GetAttribute("Tier") or 0
+                if t > maxT then maxT = t end
+            end
+            
+            cntLbl.Text = "💣 " .. count .. " 个"
+            if maxT > 0 then
+                maxTierLbl.Text = "🏆 " .. TIER_NAMES[maxT] .. " (T" .. maxT .. ")"
+                maxTierLbl.TextColor3 = TIER_COLORS[maxT]
+            else
+                maxTierLbl.Text = "🏆 无核弹"
+                maxTierLbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+            end
+            
             st.Text = string.format(
-                "场上核弹: %d 个\n最高等级: %s (Tier %d)\n自动合成: %s",
-                #nukes,
-                TIER_NAMES[maxTier],
-                maxTier,
-                autoOn and "✅ 开启" or "❌ 关闭"
+                "基地核弹: %d 个\n最高等级: %s\n自动合并: %s\n基地状态: %s",
+                count,
+                maxT > 0 and TIER_NAMES[maxT] .. " (Tier " .. maxT .. ")" or "无",
+                autoOn and "✅ 开启" or "❌ 关闭",
+                findMyNukesFolder() and "🟢 已找到" or "🔴 未找到"
             )
         end
     end)
     
-    -- ===== 最小化悬浮窗 =====
+    -- 最小化悬浮窗
     local ff = Instance.new("Frame")
     ff.Size = UDim2.new(0, 200, 0, 30)
     ff.Position = UDim2.new(0.5, -100, 0, 10)
@@ -579,7 +488,6 @@ local function buildUI()
     local fs = Instance.new("UIStroke", ff)
     fs.Thickness = 1.5
     fs.Color = Color3.fromRGB(255, 100, 100)
-    fs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     
     local fl = Instance.new("TextLabel", ff)
     fl.Size = UDim2.new(1, 0, 1, 0)
@@ -590,7 +498,6 @@ local function buildUI()
     fl.Text = "☢️ 合成核弹运行中"
     fl.TextXAlignment = Enum.TextXAlignment.Center
     
-    -- 悬浮窗点击恢复主窗口
     local touchStart = nil
     ff.InputBegan:Connect(function(i)
         if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
@@ -600,61 +507,30 @@ local function buildUI()
     ff.InputEnded:Connect(function(i)
         if touchStart and (i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch) then
             if (i.Position - touchStart).Magnitude < 5 then
-                mf.Visible = true
-                ff.Visible = false
+                mf.Visible = true; ff.Visible = false
             end
             touchStart = nil
         end
     end)
     
     minB.MouseButton1Click:Connect(function()
-        mf.Visible = false
-        ff.Visible = true
+        mf.Visible = false; ff.Visible = true
     end)
-    
     closeB.MouseButton1Click:Connect(function()
         sg:Destroy()
     end)
     
-    -- ===== 彩虹边框 =====
+    -- 彩虹边框
     local rb = RunService.Heartbeat:Connect(function()
-        local hue = (tick() * 0.3) % 1
-        local c = Color3.fromHSV(hue, 1, 1)
+        local h = (tick() * 0.3) % 1
+        local c = Color3.fromHSV(h, 1, 1)
         if stroke.Parent then stroke.Color = c end
         if fs.Parent then fs.Color = c end
     end)
-    sg.Destroying:Connect(function()
-        rb:Disconnect()
-    end)
+    sg.Destroying:Connect(function() rb:Disconnect() end)
 end
 
--- ===== 主循环 =====
-local function startMainLoop()
-    -- 生成循环：每2.5秒在玩家附近生成一个核弹
-    task.spawn(function()
-        while true do
-            task.wait(2.5)
-            if rootPart and #nukes < 30 then
-                spawnNukeNearPlayer()
-            end
-        end
-    end)
-    
-    -- 自动合并循环：每1.5秒检测一次
-    task.spawn(function()
-        while true do
-            task.wait(1.5)
-            if autoOn then
-                local merged = false
-                repeat
-                    merged = tryMerge()
-                until not merged
-            end
-        end
-    end)
-end
-
--- ===== 启动脚本 =====
+-- ===== 启动 =====
 local success, err = pcall(function()
     print("========================================")
     print("  ☢️ 合成一个核弹脚本  ")
@@ -662,28 +538,15 @@ local success, err = pcall(function()
     print("========================================")
     
     buildUI()
-    startMainLoop()
+    startAutoMerge()
     
-    -- 延迟初始生成几个核弹
-    task.delay(1, function()
-        if rootPart then
-            for i = 1, 5 do
-                spawnNukeNearPlayer()
-                task.wait(0.3)
-            end
-            notify("☢️ 合成核弹", "自动合成已开启 | by b站英吉利超入_")
+    -- 检查是否找到基地
+    task.delay(2, function()
+        if findMyNukesFolder() then
+            local nukes = getMyNukes()
+            notify("☢️ 合成核弹", "已找到基地！当前有 " .. #nukes .. " 个核弹")
         else
-            -- 等待角色加载后再生成
-            local conn
-            conn = player.CharacterAdded:Connect(function()
-                conn:Disconnect()
-                task.wait(0.5)
-                for i = 1, 5 do
-                    spawnNukeNearPlayer()
-                    task.wait(0.3)
-                end
-                notify("☢️ 合成核弹", "自动合成已开启 | by b站英吉利超入_")
-            end)
+            notify("⚠️ 提示", "未找到基地，请确保已在游戏中放置基地")
         end
     end)
 end)
