@@ -12,7 +12,7 @@ local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
+print ("脚本初始化完成)
 -- ===== 远程事件获取（已确认正确的路径） =====
 -- MergeRequest 路径: ReplicatedStorage.RE.Merge.MergeRequest
 local RE_Folder = ReplicatedStorage:FindFirstChild("RE")
