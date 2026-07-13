@@ -40,6 +40,7 @@ local myBase = nil
 local lastDropTime = 0
 local isWalking = false
 local pickupDebounce = false
+local idleTimer = 0
 
 local function notify(title, text, dur)
     dur = dur or 2
@@ -147,7 +148,28 @@ local function stopMoving()
     if hum then hum:WalkToPoint = Vector3.new() end
 end
 
--- ===== 智能寻路：找可以合并的核弹（基地里有≥2个同等级的） =====
+-- ===== 获取可合并的低等级列表 =====
+local function getMergeableTiers()
+    local allNukes = getAllMyNukes()
+    local tierCounts = {}
+    for _, data in ipairs(allNukes) do
+        if data.State == "floor" or data.State == "based" then
+            local dropTime = data.DropTime
+            local canPickup = not dropTime or Workspace:GetServerTimeNow() - dropTime >= INDIVIDUAL_DROP_DEBOUNCE
+            if canPickup then
+                tierCounts[data.Tier] = (tierCounts[data.Tier] or 0) + 1
+            end
+        end
+    end
+    local mergeable = {}
+    for t, c in pairs(tierCounts) do
+        if c >= 2 then table.insert(mergeable, t) end
+    end
+    table.sort(mergeable)
+    return mergeable
+end
+
+-- ===== 智能寻路：找可以合并的核弹 =====
 local function walkToMergeableNuke()
     if isHolding then return false end
     if pickupDebounce then return false end
@@ -155,39 +177,19 @@ local function walkToMergeableNuke()
     local pos = getPlayerPos()
     if not pos then return false end
     
+    local mergeableTiers = getMergeableTiers()
+    if #mergeableTiers == 0 then return false end
+    
+    local targetTier = mergeableTiers[1]
     local allNukes = getAllMyNukes()
-    
-    -- 统计每个等级的数量
-    local tierCounts = {}
-    for _, data in ipairs(allNukes) do
-        if data.State == "floor" or data.State == "based" then
-            local dropTime = data.DropTime
-            if not dropTime or Workspace:GetServerTimeNow() - dropTime >= INDIVIDUAL_DROP_DEBOUNCE then
-                tierCounts[data.Tier] = (tierCounts[data.Tier] or 0) + 1
-            end
-        end
-    end
-    
-    -- 找可以合并的等级（数量≥2），优先最低等级
-    local targetTier = nil
-    for t = 1, 999 do
-        local count = tierCounts[t]
-        if count and count >= 2 then
-            targetTier = t
-            break
-        end
-    end
-    
-    if not targetTier then return false end
-    
-    -- 找该等级中最近的核弹
     local closest = nil
     local closestDist = 999
     
     for _, data in ipairs(allNukes) do
         if data.Tier == targetTier and (data.State == "floor" or data.State == "based") then
             local dropTime = data.DropTime
-            if not dropTime or Workspace:GetServerTimeNow() - dropTime >= INDIVIDUAL_DROP_DEBOUNCE then
+            local canPickup = not dropTime or Workspace:GetServerTimeNow() - dropTime >= INDIVIDUAL_DROP_DEBOUNCE
+            if canPickup then
                 local nukePos = getNukePos(data.Object)
                 local dx = nukePos.X - pos.X
                 local dz = nukePos.Z - pos.Z
@@ -204,7 +206,6 @@ local function walkToMergeableNuke()
         isWalking = true
         local nukePos = getNukePos(closest)
         moveTo(nukePos)
-        notify("🚶 走向核弹", "Tier " .. targetTier .. " (可合并)")
         return true
     end
     return false
@@ -214,7 +215,7 @@ end
 -- 作者：b站英吉利超入_
 -- ============================================================
 
--- ===== 尝试拾取（距离≤7） =====
+-- ===== 尝试拾取（距离≤7，优先可合并的） =====
 local function tryPickup()
     if isHolding then return false end
     if pickupDebounce then return false end
@@ -226,28 +227,24 @@ local function tryPickup()
     local allNukes = getAllMyNukes()
     local target = nil
     local targetDist = PICKUP_RADIUS
+    local mergeableTiers = {}
+    for _, t in ipairs(getMergeableTiers()) do
+        mergeableTiers[t] = true
+    end
     
     for _, data in ipairs(allNukes) do
         if data.State == "floor" or data.State == "based" then
             local dropTime = data.DropTime
-            if not dropTime or Workspace:GetServerTimeNow() - dropTime >= INDIVIDUAL_DROP_DEBOUNCE then
+            local canPickup = not dropTime or Workspace:GetServerTimeNow() - dropTime >= INDIVIDUAL_DROP_DEBOUNCE
+            if canPickup then
                 local nukePos = getNukePos(data.Object)
                 local dx = nukePos.X - pos.X
                 local dz = nukePos.Z - pos.Z
                 local dist = math.sqrt(dx * dx + dz * dz)
                 if dist <= targetDist then
-                    -- 优先拾取可以合并的核弹
                     local tier = data.Tier
-                    local sameTierCount = 0
-                    for _, d in ipairs(allNukes) do
-                        if d.Tier == tier and d.Object ~= data.Object and (d.State == "floor" or d.State == "based") then
-                            local dt = d.DropTime
-                            if not dt or Workspace:GetServerTimeNow() - dt >= INDIVIDUAL_DROP_DEBOUNCE then
-                                sameTierCount = sameTierCount + 1
-                            end
-                        end
-                    end
-                    if sameTierCount >= 1 then
+                    -- 优先可合并的核弹
+                    if mergeableTiers[tier] then
                         target = data.Object
                         targetDist = dist
                     elseif not target then
@@ -290,11 +287,10 @@ local function tryMerge()
     if target and target.Parent then
         local ok = pcall(function() MergeRequest:FireServer(target) end)
         if ok then
-            notify("🔀 合并", "Tier " .. currentHeldTier .. " → " .. getTierName(currentHeldTier + 1))
+            notify("🔀 合并", "Tier " .. currentHeldTier .. " -> " .. getTierName(currentHeldTier + 1))
             return true
         end
     else
-        -- 没有可合并的，丢弃
         pcall(function() Drop:FireServer() end)
         isHolding = false
         currentHeldTier = 0
@@ -309,8 +305,12 @@ local function mergeAll()
     local count = 0
     for i = 1, 50 do
         if isHolding then
-            if tryMerge() then count = count + 1; task.wait(0.2)
-            else break end
+            if tryMerge() then
+                count = count + 1
+                task.wait(0.2)
+            else
+                break
+            end
         else
             if tryPickup() then
                 task.wait(0.2)
@@ -339,19 +339,37 @@ HoldEnded.OnClientEvent:Connect(function()
     currentHeldTier = 0
 end)
 
--- ===== 主自动循环 =====
+-- ===== 主自动循环（修复：不用continue，用if包裹） =====
 local function startAutoLoop()
     task.spawn(function()
         while true do
             task.wait(0.1)
-            if not autoOn then continue end
-            if not findMyBase() then continue end
             
-            if isHolding then
-                tryMerge()
-            else
-                if not tryPickup() then
-                    walkToMergeableNuke()
+            -- 检查是否开启
+            if autoOn then
+                -- 检查是否找到基地
+                if findMyBase() then
+                    -- 检查丢弃冷却
+                    if os.clock() - lastDropTime >= DROP_DEBOUNCE then
+                        if isHolding then
+                            tryMerge()
+                        else
+                            if not tryPickup() then
+                                if not walkToMergeableNuke() then
+                                    -- 没有可合并的，稍微等等省CPU
+                                    idleTimer = idleTimer + 1
+                                    if idleTimer >= 50 then
+                                        task.wait(1)
+                                        idleTimer = 0
+                                    end
+                                else
+                                    idleTimer = 0
+                                end
+                            else
+                                idleTimer = 0
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -583,25 +601,13 @@ local function buildUI()
             local count = #allNukes
             local maxT = 0
             local distData = {}
-            local mergeableTiers = {}
+            local mergeableTiers = getMergeableTiers()
             
-            -- 统计等级和可合并信息
-            local rawCounts = {}
             for _, data in ipairs(allNukes) do
                 local t = data.Tier
-                if data.State == "floor" or data.State == "based" then
-                    rawCounts[t] = (rawCounts[t] or 0) + 1
-                end
                 distData[t] = (distData[t] or 0) + 1
                 if t > maxT then maxT = t end
             end
-            
-            for t, c in pairs(rawCounts) do
-                if c >= 2 then
-                    table.insert(mergeableTiers, "T" .. t)
-                end
-            end
-            table.sort(mergeableTiers)
             
             local heldAttr = player:GetAttribute("HeldNukeTier") or 0
             if heldAttr > maxT then maxT = heldAttr end
@@ -621,24 +627,22 @@ local function buildUI()
                     if data.Tier == currentHeldTier then canMerge = true; break end
                 end
                 if canMerge then
-                    statusLbl.Text = "🔀 可合并"
-                    statusLbl.TextColor3 = Color3.fromRGB(100, 255, 100)
+                    statusLbl.Text = "🔀 可合并"; statusLbl.TextColor3 = Color3.fromRGB(100, 255, 100)
                 else
-                    statusLbl.Text = "📤 待丢弃"
-                    statusLbl.TextColor3 = Color3.fromRGB(255, 200, 100)
+                    statusLbl.Text = "📤 待丢弃"; statusLbl.TextColor3 = Color3.fromRGB(255, 200, 100)
                 end
             elseif isWalking then
-                statusLbl.Text = "🚶 走向可合并核弹"
-                statusLbl.TextColor3 = Color3.fromRGB(100, 200, 255)
+                statusLbl.Text = "🚶 走向可合并核弹"; statusLbl.TextColor3 = Color3.fromRGB(100, 200, 255)
             elseif #mergeableTiers > 0 then
-                statusLbl.Text = "🎯 发现可合并: " .. table.concat(mergeableTiers, " ")
-                statusLbl.TextColor3 = Color3.fromRGB(100, 255, 100)
+                local str = ""
+                for i, t in ipairs(mergeableTiers) do
+                    str = str .. "T" .. t .. (i < #mergeableTiers and " " or "")
+                end
+                statusLbl.Text = "🎯 发现: " .. str; statusLbl.TextColor3 = Color3.fromRGB(100, 255, 100)
             elseif count > 0 then
-                statusLbl.Text = "⏳ 没有可合并的"
-                statusLbl.TextColor3 = Color3.fromRGB(255, 200, 100)
+                statusLbl.Text = "⏳ 没有可合并的"; statusLbl.TextColor3 = Color3.fromRGB(255, 200, 100)
             else
-                statusLbl.Text = "⏳ 等待核弹"
-                statusLbl.TextColor3 = Color3.fromRGB(180, 180, 180)
+                statusLbl.Text = "⏳ 等待核弹"; statusLbl.TextColor3 = Color3.fromRGB(180, 180, 180)
             end
             
             local distStr = {}
@@ -652,8 +656,7 @@ local function buildUI()
             st.Text = string.format(
                 "基地: %s | 核弹: %d个 | 最高: T%d\n可合并: %s\n分布: %s\n模式: %s",
                 findMyBase() and "✅" or "❌",
-                count,
-                maxT,
+                count, maxT,
                 #mergeableTiers > 0 and table.concat(mergeableTiers, " ") or "无",
                 #distStr > 0 and table.concat(distStr, " ") or "无",
                 autoOn and "🟢 全自动" or "🔴 已暂停"
