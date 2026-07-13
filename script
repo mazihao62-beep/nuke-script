@@ -1,5 +1,5 @@
 -- ============================================================
--- 合成一个核弹脚本 
+-- 合成一个核弹脚本 v6(孩子们我力竭了)
 -- 作者：b站英吉利超入_
 -- ============================================================
 local Players = game:GetService("Players")
@@ -40,7 +40,8 @@ local autoOn = true
 local myBase = nil
 local lastDropTime = 0
 local isWalking = false
-local walkTargetPos = nil  -- 当前行走目标位置
+local walkTargetPos = nil
+local walkTargetObject = nil
 local pickupDebounce = false
 local idleTimer = 0
 local walkStartTime = 0
@@ -76,10 +77,8 @@ local function notify(title, text, dur)
 end
 
 local function getTierName(t) return TIER_NAMES[t] or "Tier " .. t end
-
 local function getTierColor(t) return TIER_COLORS[t] or Color3.fromHSV((t * 0.15) % 1, 1, 1) end
 
--- 获取我的基地
 local function findMyBase()
     if myBase and myBase.Parent then return myBase end
     myBase = nil
@@ -98,7 +97,6 @@ local function findMyBase()
     return nil
 end
 
--- 获取所有核弹
 local function getAllMyNukes()
     local base = findMyBase()
     if not base then return {} end
@@ -127,20 +125,27 @@ local function getPlayerPos()
     return root and root.Position
 end
 
--- ===== 修复：停止移动并清除行走状态 =====
+-- 强制停止所有移动
 local function stopMoving()
     local char = player.Character
-    if not char then return end
-    local hum = char:FindFirstChild("Humanoid")
-    if hum then
-        hum:MoveTo(Vector3.new())  -- 取消移动
-        hum:MoveTo(Vector3.new(), nil)  -- 双重取消
+    if char then
+        local hum = char:FindFirstChild("Humanoid")
+        if hum then
+            hum:WalkToPoint = Vector3.new()
+            hum:MoveTo(Vector3.new())
+        end
     end
     isWalking = false
     walkTargetPos = nil
+    walkTargetObject = nil
 end
 
+-- 移动到目标
 local function moveTo(pos)
+    if not pos then
+        stopMoving()
+        return
+    end
     local char = player.Character
     if not char then return end
     local hum = char:FindFirstChild("Humanoid")
@@ -149,7 +154,7 @@ local function moveTo(pos)
     end
 end
 
--- 获取可合并的等级
+-- 获取可合并等级
 local function getMergeableTiers()
     local allNukes = getAllMyNukes()
     local tierCounts = {}
@@ -159,9 +164,7 @@ local function getMergeableTiers()
             if data.DropTime then
                 canPickup = (Workspace:GetServerTimeNow() - data.DropTime) >= INDIVIDUAL_DROP_DEBOUNCE
             end
-            if canPickup then
-                tierCounts[data.Tier] = (tierCounts[data.Tier] or 0) + 1
-            end
+            if canPickup then tierCounts[data.Tier] = (tierCounts[data.Tier] or 0) + 1 end
         end
     end
     local mergeable = {}
@@ -172,7 +175,7 @@ local function getMergeableTiers()
     return mergeable
 end
 
--- ===== 修复：智能寻路，加入超时和距离检测 =====
+-- 寻路到可合并核弹（修复：保存对象引用，检查有效性）
 local function walkToMergeableNuke()
     if isHolding then stopMoving(); return false end
     if pickupDebounce then return false end
@@ -184,8 +187,8 @@ local function walkToMergeableNuke()
     
     local targetTier = mergeableTiers[1]
     local allNukes = getAllMyNukes()
-    local closest = nil
-    local closestDist = 999
+    local bestObj = nil
+    local bestDist = 999
     
     for _, data in ipairs(allNukes) do
         if data.Tier == targetTier and (data.State == "floor" or data.State == "based") then
@@ -198,28 +201,30 @@ local function walkToMergeableNuke()
                 local dx = nukePos.X - pos.X
                 local dz = nukePos.Z - pos.Z
                 local dist = math.sqrt(dx * dx + dz * dz)
-                if dist < closestDist then
-                    closest = data.Object
-                    closestDist = dist
+                if dist < bestDist then
+                    bestObj = data.Object
+                    bestDist = dist
                 end
             end
         end
     end
     
-    if closest then
-        local nukePos = getNukePos(closest)
-        -- 如果距离已经≤7，不需要走，直接拾取
+    if bestObj and bestObj.Parent then
+        local nukePos = getNukePos(bestObj)
         local dx = nukePos.X - pos.X
         local dz = nukePos.Z - pos.Z
         local dist = math.sqrt(dx * dx + dz * dz)
+        
         if dist <= PICKUP_RADIUS then
             stopMoving()
-            return false  -- 让主循环去tryPickup
+            return false
         end
         
-        isWalking = true
+        -- 保存目标引用
+        walkTargetObject = bestObj
         walkTargetPos = nukePos
         walkStartTime = os.clock()
+        isWalking = true
         moveTo(nukePos)
         return true
     end
@@ -230,7 +235,7 @@ end
 -- 作者：b站英吉利超入_
 -- ============================================================
 
--- ===== 修复：尝试拾取，重合时选最近的 =====
+-- 尝试拾取
 local function tryPickup()
     if isHolding then return false end
     if pickupDebounce then return false end
@@ -240,13 +245,10 @@ local function tryPickup()
     if not pos then return false end
     
     local allNukes = getAllMyNukes()
-    -- 先找可合并的，取最近的
     local mergeableTiersMap = {}
-    for _, t in ipairs(getMergeableTiers()) do
-        mergeableTiersMap[t] = true
-    end
+    for _, t in ipairs(getMergeableTiers()) do mergeableTiersMap[t] = true end
     
-    local bestTarget = nil
+    local bestObj = nil
     local bestDist = PICKUP_RADIUS
     
     for _, data in ipairs(allNukes) do
@@ -260,28 +262,24 @@ local function tryPickup()
                 local dx = nukePos.X - pos.X
                 local dz = nukePos.Z - pos.Z
                 local dist = math.sqrt(dx * dx + dz * dz)
-                
                 if dist <= bestDist then
-                    -- 如果是可合并的，直接选
                     if mergeableTiersMap[data.Tier] then
-                        bestTarget = data.Object
-                        bestDist = dist
-                    elseif not bestTarget then
-                        bestTarget = data.Object
-                        bestDist = dist
+                        bestObj = data.Object; bestDist = dist
+                    elseif not bestObj then
+                        bestObj = data.Object; bestDist = dist
                     end
                 end
             end
         end
     end
     
-    if bestTarget then
+    if bestObj then
         pickupDebounce = true
-        local ok = pcall(function() PickUp:FireServer(bestTarget) end)
+        local ok = pcall(function() PickUp:FireServer(bestObj) end)
         if ok then
-            local tier = tonumber(bestTarget:GetAttribute("Tier")) or 1
+            local tier = tonumber(bestObj:GetAttribute("Tier")) or 1
             notify("📥 拾取", "Tier " .. tier)
-            stopMoving()  -- 拿起后立即停止移动
+            stopMoving()
             task.delay(0.4, function() pickupDebounce = false end)
             return true
         end
@@ -290,16 +288,14 @@ local function tryPickup()
     return false
 end
 
--- ===== 修复：合并后立即停止移动 =====
+-- 合并
 local function tryMerge()
     if not isHolding then return false end
     
     local nukes = getAllMyNukes()
     local target = nil
     for _, data in ipairs(nukes) do
-        if data.Tier == currentHeldTier then
-            target = data.Object; break
-        end
+        if data.Tier == currentHeldTier then target = data.Object; break end
     end
     
     if target and target.Parent then
@@ -318,7 +314,7 @@ local function tryMerge()
     return false
 end
 
--- 批量合并
+-- 批量
 local function mergeAll()
     local count = 0
     for i = 1, 50 do
@@ -326,9 +322,7 @@ local function mergeAll()
             if tryMerge() then count = count + 1; task.wait(0.2) else break end
         else
             if tryPickup() then task.wait(0.2)
-            else
-                walkToMergeableNuke(); task.wait(0.5)
-            end
+            else walkToMergeableNuke(); task.wait(0.5) end
         end
     end
     if count > 0 then notify("🔥 批量完成", "共合并 " .. count .. " 次")
@@ -336,11 +330,11 @@ local function mergeAll()
     return count
 end
 
--- 监听服务端事件
+-- 监听
 HoldStarted.OnClientEvent:Connect(function(tier)
     isHolding = true
     currentHeldTier = tonumber(tier) or tier
-    stopMoving()  -- 立刻停止移动
+    stopMoving()
 end)
 
 HoldEnded.OnClientEvent:Connect(function()
@@ -349,53 +343,75 @@ HoldEnded.OnClientEvent:Connect(function()
     stopMoving()
 end)
 
--- ===== 修复：主循环加入寻路超时和距离检测 =====
+-- 主循环（修复：空手时如果正在走但目标无效立刻停止）
 local function startAutoLoop()
     task.spawn(function()
         while true do
             task.wait(0.1)
-            if autoOn then
-                if findMyBase() then
-                    if os.clock() - lastDropTime >= DROP_DEBOUNCE then
-                        if isHolding then
-                            tryMerge()
+            if not autoOn then continue end
+            if not findMyBase() then continue end
+            if os.clock() - lastDropTime < DROP_DEBOUNCE then continue end
+            
+            -- Lua 5.1 没有 continue，改用 if 套嵌
+            -- 这里用 if not 条件 then else 结构
+            do
+                if not (os.clock() - lastDropTime >= DROP_DEBOUNCE) then
+                    -- 跳过
+                elseif isHolding then
+                    tryMerge()
+                else
+                    -- 空手状态：如果正在走但目标无效，立刻停止
+                    if isWalking then
+                        local shouldStop = false
+                        if not walkTargetPos then
+                            shouldStop = true
+                        elseif not walkTargetObject or not walkTargetObject.Parent then
+                            shouldStop = true
                         else
-                            -- 如果在行走中
-                            if isWalking then
+                            -- 检查目标是否还存在且可拾取
+                            local stillExists = false
+                            local nukes = getAllMyNukes()
+                            for _, data in ipairs(nukes) do
+                                if data.Object == walkTargetObject and (data.State == "floor" or data.State == "based") then
+                                    stillExists = true
+                                    break
+                                end
+                            end
+                            if not stillExists then
+                                shouldStop = true
+                            else
+                                -- 检查距离
                                 local pos = getPlayerPos()
-                                if pos and walkTargetPos then
+                                if pos then
                                     local dx = walkTargetPos.X - pos.X
                                     local dz = walkTargetPos.Z - pos.Z
                                     local dist = math.sqrt(dx * dx + dz * dz)
-                                    
-                                    -- 如果距离目标≤7，停止行走，改为尝试拾取
                                     if dist <= PICKUP_RADIUS then
-                                        stopMoving()
-                                        tryPickup()
-                                    -- 如果走了超过5秒还没到，重新寻路
+                                        shouldStop = true
                                     elseif os.clock() - walkStartTime > 5 then
-                                        stopMoving()
-                                        walkToMergeableNuke()
+                                        shouldStop = true
                                     end
-                                else
-                                    stopMoving()
                                 end
-                            end
-                            
-                            -- 尝试拾取，不行就寻路
-                            if not tryPickup() then
-                                if not walkToMergeableNuke() then
-                                    idleTimer = idleTimer + 1
-                                    if idleTimer >= 50 then
-                                        task.wait(1); idleTimer = 0
-                                    end
-                                else
-                                    idleTimer = 0
-                                end
-                            else
-                                idleTimer = 0
                             end
                         end
+                        
+                        if shouldStop then
+                            stopMoving()
+                        end
+                    end
+                    
+                    -- 尝试拾取，不行就寻路
+                    if not tryPickup() then
+                        if not walkToMergeableNuke() then
+                            idleTimer = idleTimer + 1
+                            if idleTimer >= 50 then
+                                task.wait(1); idleTimer = 0
+                            end
+                        else
+                            idleTimer = 0
+                        end
+                    else
+                        idleTimer = 0
                     end
                 end
             end
@@ -403,7 +419,7 @@ local function startAutoLoop()
     end)
 end
 
--- 键盘快捷键
+-- 快捷键
 UserInputService.InputBegan:Connect(function(input, gpo)
     if gpo then return end
     if input.KeyCode == Enum.KeyCode.M then
@@ -421,11 +437,11 @@ UserInputService.InputBegan:Connect(function(input, gpo)
     end
 end)
 -- ============================================================
--- 合成一个核弹脚本
+-- 合成一个核弹脚本 
 -- 作者：b站英吉利超入_
 -- ============================================================
 
--- UI（与之前相同）
+-- UI与之前一致（略作精简保证字数）
 local function buildUI()
     local existing = CoreGui:FindFirstChild("NukeMergeUI")
     if existing then existing:Destroy() end
@@ -688,17 +704,17 @@ local function buildUI()
     sg.Destroying:Connect(function() rb:Disconnect() end)
 end
 
--- 启动
 local success, err = pcall(function()
     print("========================================")
-    print("  ☢️ 合成一个核弹脚本  ")
+    print("  ☢️ 合成一个核弹脚本 ")
     print("  作者: b站英吉利超入_")
+    print("  修复: 空手乱跑终极修复")
     print("========================================")
     buildUI(); startAutoLoop()
     task.delay(2, function()
         if findMyBase() then
             local n = getAllMyNukes()
-            notify("☢️ 已就绪", #n .. "个核弹 | 自动寻找可合并目标")
+            notify("☢️ 已就绪", #n .. "个核弹 | 自动寻路合并")
         else
             notify("⚠️ 提示", "未找到基地，请按R键刷新")
         end
