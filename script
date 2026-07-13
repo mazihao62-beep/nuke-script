@@ -13,8 +13,9 @@ local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
--- ===== 获取合并远程事件 =====
-local Remotes = require(game:GetService("ReplicatedStorage").Packages.Remotes)
+-- ===== 获取合并远程事件（源码MergeRequest路径） =====
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Remotes = require(ReplicatedStorage.Packages.Remotes)
 local MergeRequest = Remotes.MergeRequest
 
 -- ===== 通知 =====
@@ -65,7 +66,8 @@ local function notify(title, text, dur)
     end)
 end
 
--- ===== 等级颜色 =====
+-- ===== 等级 =====
+local TIER_NAMES = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}
 local TIER_COLORS = {
     Color3.fromRGB(180, 180, 180),
     Color3.fromRGB(80, 200, 80),
@@ -74,14 +76,13 @@ local TIER_COLORS = {
     Color3.fromRGB(255, 200, 50),
     Color3.fromRGB(255, 50, 50)
 }
-local TIER_NAMES = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}
 
 -- ===== 全局状态 =====
-local myNukesFolder = nil  -- 玩家的核弹文件夹
+local myNukesFolder = nil
 local autoOn = true
 local mergeCooldown = 0
 
--- ===== 查找玩家的核弹文件夹（源码findMyNukesFolder逻辑） =====
+-- ===== 查找玩家核弹文件夹（源码findMyNukesFolder精确实现） =====
 local function findMyNukesFolder()
     if myNukesFolder and myNukesFolder.Parent then
         return myNukesFolder
@@ -94,8 +95,9 @@ local function findMyNukesFolder()
     for _, base in ipairs(bases:GetChildren()) do
         local nukes = base:FindFirstChild("Nukes")
         if nukes then
-            for _, nuke in ipairs(nukes:GetChildren()) do
-                if nuke:GetAttribute("OwnerUserId") == player.UserId then
+            -- 检查该Nukes文件夹下是否有属于玩家的核弹
+            for _, child in ipairs(nukes:GetChildren()) do
+                if child:GetAttribute("OwnerUserId") == player.UserId then
                     myNukesFolder = nukes
                     return nukes
                 end
@@ -105,21 +107,51 @@ local function findMyNukesFolder()
     return nil
 end
 
--- ===== 获取玩家基地中所有真实核弹 =====
+-- ===== 获取玩家所有真实核弹（修复：更健壮的检测） =====
 local function getMyNukes()
     local folder = findMyNukesFolder()
     if not folder then return {} end
     
     local list = {}
     for _, child in ipairs(folder:GetChildren()) do
-        if (child:IsA("BasePart") or child:IsA("Model")) and child:GetAttribute("Tier") then
-            table.insert(list, child)
+        -- 核弹可以是BasePart或Model（源码支持两种类型）
+        local isValid = false
+        if child:IsA("BasePart") then
+            isValid = true
+        elseif child:IsA("Model") then
+            isValid = true
+        end
+        
+        if isValid then
+            -- 获取等级，支持数字和字符串两种格式
+            local tier = child:GetAttribute("Tier")
+            if tier then
+                tier = tonumber(tier)
+                if tier and tier >= 1 and tier <= 6 then
+                    table.insert(list, {
+                        Object = child,
+                        Tier = tier
+                    })
+                end
+            end
         end
     end
     return list
 end
 
--- ===== 核心：合并两个同等级的真实核弹 =====
+-- ===== 获取玩家基地中最高等级 =====
+local function getMaxTier()
+    local nukes = getMyNukes()
+    local maxT = 0
+    for _, data in ipairs(nukes) do
+        if data.Tier > maxT then
+            maxT = data.Tier
+        end
+    end
+    return maxT
+end
+
+-- ===== 核心：合并两个同等级真实核弹（源码tryDetect逻辑） =====
 local function tryMerge()
     local now = os.clock()
     if now < mergeCooldown then return false end
@@ -127,41 +159,45 @@ local function tryMerge()
     local nukes = getMyNukes()
     if #nukes < 2 then return false end
     
-    -- 从低到高遍历等级
+    -- 先按等级分组
+    local tierGroups = {}
+    for _, data in ipairs(nukes) do
+        tierGroups[data.Tier] = tierGroups[data.Tier] or {}
+        table.insert(tierGroups[data.Tier], data.Object)
+    end
+    
+    -- 从低到高找第一个有2个以上同等级的
     for tier = 1, 5 do
-        local sameTier = {}
-        for _, n in ipairs(nukes) do
-            if n:GetAttribute("Tier") == tier then
-                table.insert(sameTier, n)
-            end
-        end
-        
-        if #sameTier >= 2 then
-            local target = sameTier[1]
+        local group = tierGroups[tier]
+        if group and #group >= 2 then
+            local target = group[1]
             
-            -- 调用服务端合并接口（源码MergeRequest:FireServer逻辑）
-            local success = pcall(function()
-                MergeRequest:FireServer(target)
-            end)
-            
-            if success then
-                mergeCooldown = now + 0.3
-                notify("🔀 合并请求已发送", "Tier " .. tier .. " → " .. TIER_NAMES[tier])
-                return true
+            -- 检查目标对象是否还存在
+            if target and target.Parent then
+                local success = pcall(function()
+                    MergeRequest:FireServer(target)
+                end)
+                
+                if success then
+                    -- 源码中使用0.5秒冷却
+                    mergeCooldown = now + 0.8
+                    notify("🔀 合并请求", "Tier " .. tier .. " → 升级中...")
+                    return true
+                end
             end
         end
     end
+    
     return false
 end
 
--- ===== 批量合并 =====
+-- ===== 批量合并（带间隔，防止服务器限流） =====
 local function mergeAll()
     local count = 0
-    local maxAttempts = 30  -- 防止死循环
-    for i = 1, maxAttempts do
+    for i = 1, 20 do  -- 最多20次，防止死循环
         if tryMerge() then
             count = count + 1
-            task.wait(0.1)
+            task.wait(0.8)  -- 每次合并间隔0.8秒，避免被服务器限流
         else
             break
         end
@@ -178,17 +214,24 @@ end
 -- 作者：b站英吉利超入_
 -- ============================================================
 
--- ===== 自动合并循环 =====
+-- ===== 自动合并循环（修复：更稳定的循环逻辑） =====
 local function startAutoMerge()
     task.spawn(function()
         while true do
-            task.wait(2)
-            if autoOn then
-                local merged = false
-                repeat
-                    merged = tryMerge()
-                    if merged then task.wait(0.3) end
-                until not merged
+            task.wait(3)  -- 每3秒检测一次
+            
+            if not autoOn then continue end
+            
+            -- 检查是否找到基地
+            local folder = findMyNukesFolder()
+            if not folder then continue end
+            
+            local nukes = getMyNukes()
+            if #nukes < 2 then continue end
+            
+            -- 尝试合并一次，成功后等待1秒再试
+            if tryMerge() then
+                task.wait(1)
             end
         end
     end)
@@ -201,6 +244,15 @@ UserInputService.InputBegan:Connect(function(input, gpo)
         tryMerge()
     elseif input.KeyCode == Enum.KeyCode.N then
         mergeAll()
+    elseif input.KeyCode == Enum.KeyCode.R then
+        -- 刷新查找基地（R键）
+        myNukesFolder = nil
+        if findMyNukesFolder() then
+            local n = getMyNukes()
+            notify("🔄 已刷新", "找到 " .. #n .. " 个核弹")
+        else
+            notify("⚠️ 未找到", "未找到你的基地")
+        end
     end
 end)
 
@@ -214,8 +266,8 @@ local function buildUI()
     sg.Parent = CoreGui
     
     local mf = Instance.new("Frame")
-    mf.Size = UDim2.new(0, 280, 0, 280)
-    mf.Position = UDim2.new(0.5, -140, 0.4, -140)
+    mf.Size = UDim2.new(0, 300, 0, 310)
+    mf.Position = UDim2.new(0.5, -150, 0.4, -155)
     mf.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
     mf.BackgroundTransparency = 0.05
     mf.BorderSizePixel = 0
@@ -423,6 +475,16 @@ local function buildUI()
         mergeAll()
     end)
     
+    addBtn("🔄 刷新基地检测 (R)", Color3.fromRGB(60, 120, 200)).MouseButton1Click:Connect(function()
+        myNukesFolder = nil
+        if findMyNukesFolder() then
+            local n = getMyNukes()
+            notify("🔄 已刷新", "找到 " .. #n .. " 个核弹")
+        else
+            notify("⚠️ 未找到", "请确保已在游戏中放置了基地")
+        end
+    end)
+    
     addSection("⚙️ 设置")
     addSwitch("🔄 自动合并", autoOn, function(v)
         autoOn = v
@@ -431,7 +493,7 @@ local function buildUI()
     addSection("📊 实时信息")
     
     local st = Instance.new("TextLabel", sf)
-    st.Size = UDim2.new(1, 0, 0, 60)
+    st.Size = UDim2.new(1, 0, 0, 85)
     st.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
     st.BorderSizePixel = 0
     st.Font = Enum.Font.SourceSans
@@ -439,35 +501,55 @@ local function buildUI()
     st.TextColor3 = Color3.fromRGB(200, 200, 200)
     st.TextXAlignment = Enum.TextXAlignment.Left
     st.TextYAlignment = Enum.TextYAlignment.Top
+    st.Parent = sf
     Instance.new("UICorner", st).CornerRadius = UDim.new(0, 6)
     
-    -- 定时刷新信息
+    -- 定时刷新信息（修复：更频繁地更新，显示详细信息）
     task.spawn(function()
         while sg and sg.Parent do
-            task.wait(1.5)
-            local nukes = getMyNukes()
-            local count = #nukes
-            local maxT = 0
-            for _, n in ipairs(nukes) do
-                local t = n:GetAttribute("Tier") or 0
-                if t > maxT then maxT = t end
+            task.wait(1)
+            
+            local folder = findMyNukesFolder()
+            local nukesData = getMyNukes()
+            local count = #nukesData
+            local maxTierValue = 0
+            local tierCounts = {}
+            
+            for _, data in ipairs(nukesData) do
+                local t = data.Tier
+                tierCounts[t] = (tierCounts[t] or 0) + 1
+                if t > maxTierValue then maxTierValue = t end
             end
             
+            -- 更新信息栏
             cntLbl.Text = "💣 " .. count .. " 个"
-            if maxT > 0 then
-                maxTierLbl.Text = "🏆 " .. TIER_NAMES[maxT] .. " (T" .. maxT .. ")"
-                maxTierLbl.TextColor3 = TIER_COLORS[maxT]
+            
+            if maxTierValue > 0 then
+                local name = TIER_NAMES[maxTierValue] or "Unknown"
+                maxTierLbl.Text = "🏆 " .. name .. " (T" .. maxTierValue .. ")"
+                maxTierLbl.TextColor3 = TIER_COLORS[maxTierValue] or Color3.fromRGB(200, 200, 200)
             else
                 maxTierLbl.Text = "🏆 无核弹"
                 maxTierLbl.TextColor3 = Color3.fromRGB(200, 200, 200)
             end
             
+            -- 详细信息
+            local detailLines = {}
+            for t = 1, 6 do
+                local c = tierCounts[t] or 0
+                if c > 0 then
+                    table.insert(detailLines, string.format("T%d %s: %d个", t, TIER_NAMES[t], c))
+                end
+            end
+            
             st.Text = string.format(
-                "基地核弹: %d 个\n最高等级: %s\n自动合并: %s\n基地状态: %s",
+                "基地: %s | 核弹: %d个\n最高等级: %s (Tier %d)\n自动合并: %s\n%s",
+                folder and "✅ 已连接" or "❌ 未找到",
                 count,
-                maxT > 0 and TIER_NAMES[maxT] .. " (Tier " .. maxT .. ")" or "无",
+                maxTierValue > 0 and TIER_NAMES[maxTierValue] or "无",
+                maxTierValue,
                 autoOn and "✅ 开启" or "❌ 关闭",
-                findMyNukesFolder() and "🟢 已找到" or "🔴 未找到"
+                #detailLines > 0 and table.concat(detailLines, " | ") or "暂无核弹"
             )
         end
     end)
@@ -534,19 +616,22 @@ end
 local success, err = pcall(function()
     print("========================================")
     print("  ☢️ 合成一个核弹脚本  ")
-    print("  作者: b站英吉利超入_")
+    print("  作者: b站英吉利超入_ ")
     print("========================================")
     
     buildUI()
     startAutoMerge()
     
-    -- 检查是否找到基地
+    -- 延迟检测基地
     task.delay(2, function()
-        if findMyNukesFolder() then
-            local nukes = getMyNukes()
-            notify("☢️ 合成核弹", "已找到基地！当前有 " .. #nukes .. " 个核弹")
+        local folder = findMyNukesFolder()
+        if folder then
+            local n = getMyNukes()
+            local maxT = getMaxTier()
+            local detail = "最高Tier " .. maxT .. " | " .. #n .. "个核弹"
+            notify("☢️ 已就绪", detail)
         else
-            notify("⚠️ 提示", "未找到基地，请确保已在游戏中放置基地")
+            notify("⚠️ 提示", "未找到基地，按R键刷新检测")
         end
     end)
 end)
